@@ -94,6 +94,25 @@ const addPatient = async (req, res) => {
       patientData.fromAppointment = true;
     }
 
+    // Check if patient already exists with the same contact number
+    const existingPatient = await Patient.findOne({ 
+      phone: contact,
+      centerId: patientCenterId 
+    });
+    
+    if (existingPatient) {
+      return res.status(400).json({ 
+        message: `Patient already exists with phone number ${contact}. Please check the existing patient records.`,
+        existingPatient: {
+          _id: existingPatient._id,
+          name: existingPatient.name,
+          uhId: existingPatient.uhId,
+          phone: existingPatient.phone,
+          email: existingPatient.email
+        }
+      });
+    }
+
     const newPatient = new Patient(patientData);
     const savedPatient = await newPatient.save();
 
@@ -118,6 +137,22 @@ const addPatient = async (req, res) => {
     });
   } catch (error) {
     console.error("Create patient error:", error);
+    
+    // Handle duplicate UH ID error
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        message: "Patient with this ID already exists. Please check if the patient is already registered in the system."
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        message: "Invalid patient data. Please check all required fields are filled correctly.", 
+        error: error.message 
+      });
+    }
+    
     res.status(500).json({ message: "Failed to create patient", error: error.message });
   }
 };

@@ -127,7 +127,7 @@ const emailTemplates = {
           <div class="info-box">
             <h3>Patient Information</h3>
             <p><strong>Name:</strong> ${appointment.patientName}</p>
-            <p><strong>Email:</strong> ${appointment.patientEmail}</p>
+            ${appointment.patientEmail ? `<p><strong>Email:</strong> ${appointment.patientEmail}</p>` : ''}
             <p><strong>Phone:</strong> ${appointment.patientPhone}</p>
             <p><strong>Age:</strong> ${appointment.patientAge}</p>
             <p><strong>Gender:</strong> ${appointment.patientGender}</p>
@@ -139,7 +139,7 @@ const emailTemplates = {
             <p><strong>Preferred Date:</strong> ${new Date(appointment.preferredDate).toLocaleDateString()}</p>
             <p><strong>Preferred Time:</strong> ${appointment.preferredTime}</p>
             <p><strong>Type:</strong> ${appointment.appointmentType}</p>
-            <p><strong>Reason for Visit:</strong> ${appointment.reasonForVisit}</p>
+            ${appointment.reasonForVisit ? `<p><strong>Reason for Visit:</strong> ${appointment.reasonForVisit}</p>` : ''}
             <p><strong>Contact Method:</strong> ${appointment.contactMethod}</p>
             ${appointment.preferredContactTime ? `<p><strong>Preferred Contact Time:</strong> ${appointment.preferredContactTime}</p>` : ''}
           </div>
@@ -170,7 +170,7 @@ const emailTemplates = {
             <p><strong>Please contact the patient to confirm the appointment details.</strong></p>
             <p>Preferred contact method: ${appointment.contactMethod}</p>
             <p>Patient phone: ${appointment.patientPhone}</p>
-            <p>Patient email: ${appointment.patientEmail}</p>
+            ${appointment.patientEmail ? `<p>Patient email: ${appointment.patientEmail}</p>` : ''}
           </div>
         </div>
         <div class="footer">
@@ -232,6 +232,12 @@ const emailTemplates = {
 // Email sending functions
 export const sendAppointmentConfirmation = async (appointment) => {
   try {
+    // Check if patient email exists and is not empty
+    if (!appointment.patientEmail || appointment.patientEmail.trim() === '') {
+      console.log('No patient email provided, skipping email confirmation');
+      return false;
+    }
+
     const transporter = createTransporter();
     
     const mailOptions = {
@@ -305,6 +311,12 @@ export const sendAppointmentNotificationToCenter = async (appointment) => {
 
 export const sendAppointmentCancellation = async (appointment) => {
   try {
+    // Check if patient email exists and is not empty
+    if (!appointment.patientEmail || appointment.patientEmail.trim() === '') {
+      console.log('No patient email provided, skipping cancellation email');
+      return false;
+    }
+
     const transporter = createTransporter();
     
     const mailOptions = {

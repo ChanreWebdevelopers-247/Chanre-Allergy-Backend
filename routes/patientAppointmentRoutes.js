@@ -12,13 +12,14 @@ import {
   searchAppointmentsByPatientName
 } from '../controllers/patientAppointmentController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { uploadMedicalDocs } from '../middleware/appointmentUploadMiddleware.js';
 
 const router = express.Router();
 
 // Public routes (no authentication required)
 router.get('/centers', getAllCentersForBooking);
 router.get('/centers/nearby', getNearbyCenters);
-router.post('/book', bookAppointment);
+router.post('/book', uploadMedicalDocs, bookAppointment);
 router.get('/confirmation/:confirmationCode', getAppointmentByCode);
 router.post('/cancel/:confirmationCode', cancelAppointment);
 router.post('/approve/:confirmationCode', approveAppointment);

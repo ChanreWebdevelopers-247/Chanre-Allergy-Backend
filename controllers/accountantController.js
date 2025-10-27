@@ -388,8 +388,18 @@ export const getAccountantStats = async (req, res) => {
 // Get all bills and transactions for accountant
 export const getAllBillsAndTransactions = async (req, res) => {
   try {
+    // Check if user has centerId assigned
+    if (!req.user || !req.user.centerId) {
+      return res.status(400).json({ 
+        message: 'Accountant must be assigned to a center to access billing data. Please contact administrator to assign a center.',
+        error: 'MISSING_CENTER_ASSIGNMENT'
+      });
+    }
+
     const centerId = req.user.centerId;
     const { startDate, endDate, billType, status, page = 1, limit = 50 } = req.query;
+    
+    console.log(`📋 Fetching bills for center: ${centerId}`);
 
 
     // Build date filter
@@ -402,13 +412,25 @@ export const getAllBillsAndTransactions = async (req, res) => {
       end.setHours(23, 59, 59, 999);
       dateFilter.$lte = end;
     }
+    
+    // Only apply date filter if it has values
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
 
     // 1. Get ALL patients and group their billing by invoice number
     const patientQuery = { centerId };
-    const patients = await Patient.find(patientQuery)
-      .populate('assignedDoctor', 'name')
-      .populate('currentDoctor', 'name')
-      .select('name uhId age gender contact billing reassignedBilling createdAt');
+    let patients = [];
+    try {
+      patients = await Patient.find(patientQuery)
+        .populate('assignedDoctor', 'name')
+        .populate('currentDoctor', 'name')
+        .select('name uhId age gender contact billing reassignedBilling createdAt');
+    } catch (patientError) {
+      console.error('Error fetching patients:', patientError);
+      return res.status(500).json({ 
+        message: 'Error fetching patient data', 
+        error: patientError.message 
+      });
+    }
     
     // Debug: Check specific patient's reassignment billing
     const rahulPatient = patients.find(p => p.name === 'Rahul' && p.uhId === '2345002');
@@ -433,10 +455,11 @@ export const getAllBillsAndTransactions = async (req, res) => {
         
         patient.billing.forEach(bill => {
           const billDate = new Date(bill.createdAt || patient.createdAt);
-          const matchesDateFilter = (!dateFilter.$gte || billDate >= dateFilter.$gte) && 
-                                   (!dateFilter.$lte || billDate <= dateFilter.$lte);
+          const matchesDateFilter = !hasDateFilter || 
+                                   ((!dateFilter.$gte || billDate >= dateFilter.$gte) && 
+                                    (!dateFilter.$lte || billDate <= dateFilter.$lte));
           
-          if ((!startDate && !endDate) || matchesDateFilter) {
+          if (matchesDateFilter) {
             // Group by date (YYYY-MM-DD) to combine all services from same day
             const dateKey = billDate.toISOString().split('T')[0];
             
@@ -544,10 +567,11 @@ export const getAllBillsAndTransactions = async (req, res) => {
         
         patient.reassignedBilling.forEach(bill => {
           const billDate = new Date(bill.createdAt || patient.createdAt);
-          const matchesDateFilter = (!dateFilter.$gte || billDate >= dateFilter.$gte) && 
-                                   (!dateFilter.$lte || billDate <= dateFilter.$lte);
+          const matchesDateFilter = !hasDateFilter || 
+                                   ((!dateFilter.$gte || billDate >= dateFilter.$gte) && 
+                                    (!dateFilter.$lte || billDate <= dateFilter.$lte));
           
-          if ((!startDate && !endDate) || matchesDateFilter) {
+          if (matchesDateFilter) {
             const invoiceNum = bill.invoiceNumber || `REASSIGN-${bill._id}`;
             
             console.log(`🔍 Processing reassignment bill: ${invoiceNum} for patient ${patient.name}`);
@@ -601,24 +625,33 @@ export const getAllBillsAndTransactions = async (req, res) => {
       status: b.status
     })));
 
-    // 2. Get test/lab bills from TestRequest
+      // 2. Get test/lab bills from TestRequest
     const testQuery = { centerId };
-    if (Object.keys(dateFilter).length > 0) {
+    if (hasDateFilter) {
       testQuery.createdAt = dateFilter;
     }
 
-    const testRequests = await TestRequest.find(testQuery)
-      .populate({
-        path: 'patientId',
-        select: 'name uhId',
-        model: 'Patient'
-      })
-      .populate({
-        path: 'doctorId',
-        select: 'name',
-        model: 'User'
-      })
-      .select('patientId doctorId billing status createdAt patientName');
+    let testRequests = [];
+    try {
+      testRequests = await TestRequest.find(testQuery)
+        .populate({
+          path: 'patientId',
+          select: 'name uhId',
+          model: 'Patient'
+        })
+        .populate({
+          path: 'doctorId',
+          select: 'name',
+          model: 'User'
+        })
+        .select('patientId doctorId billing status createdAt patientName');
+    } catch (testError) {
+      console.error('Error fetching test requests:', testError);
+      return res.status(500).json({ 
+        message: 'Error fetching test request data', 
+        error: testError.message 
+      });
+    }
 
 
     const testBills = [];
@@ -677,14 +710,23 @@ export const getAllBillsAndTransactions = async (req, res) => {
 
     // 3. Get payment logs
     const paymentQuery = { centerId };
-    if (Object.keys(dateFilter).length > 0) {
+    if (hasDateFilter) {
       paymentQuery.createdAt = dateFilter;
     }
 
-    const paymentLogs = await PaymentLog.find(paymentQuery)
-      .populate('patientId', 'name uhId')
-      .populate('doctorId', 'name')
-      .sort({ createdAt: -1 });
+    let paymentLogs = [];
+    try {
+      paymentLogs = await PaymentLog.find(paymentQuery)
+        .populate('patientId', 'name uhId')
+        .populate('doctorId', 'name')
+        .sort({ createdAt: -1 });
+    } catch (paymentError) {
+      console.error('Error fetching payment logs:', paymentError);
+      return res.status(500).json({ 
+        message: 'Error fetching payment log data', 
+        error: paymentError.message 
+      });
+    }
 
     const transactions = paymentLogs.map(log => ({
       _id: log._id,
@@ -749,7 +791,12 @@ export const getAllBillsAndTransactions = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error in getAllBillsAndTransactions:', error);
+    res.status(500).json({ 
+      message: 'Server error while fetching billing data', 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 };
 
@@ -818,9 +865,18 @@ export const fixAccountantCenterAssignment = async (req, res) => {
 // Get financial reports (daily, weekly, monthly, yearly) with detailed transactions
 export const getFinancialReports = async (req, res) => {
   try {
+    // Check if user has centerId assigned
+    if (!req.user || !req.user.centerId) {
+      return res.status(400).json({ 
+        message: 'Accountant must be assigned to a center to access financial reports. Please contact administrator to assign a center.',
+        error: 'MISSING_CENTER_ASSIGNMENT'
+      });
+    }
+
     const centerId = req.user.centerId;
     const { reportType = 'daily', startDate, endDate } = req.query;
 
+    console.log(`📊 Fetching ${reportType} financial report for center: ${centerId}`);
 
     const now = new Date();
     let dateFilter = {};
@@ -853,6 +909,9 @@ export const getFinancialReports = async (req, res) => {
         }
         break;
     }
+    
+    // Only apply date filter if it has values
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
 
     // Fetch all patients and their bills
     const patients = await Patient.find({ centerId })
@@ -861,10 +920,14 @@ export const getFinancialReports = async (req, res) => {
       .select('name uhId age gender contact billing reassignedBilling createdAt');
 
     // Fetch test requests
-    const testRequests = await TestRequest.find({
-      centerId,
-      createdAt: dateFilter
-    }).populate('patientId', 'name uhId').populate('doctorId', 'name').select('billing createdAt patientId doctorId');
+    const testRequestsQuery = { centerId };
+    if (hasDateFilter) {
+      testRequestsQuery.createdAt = dateFilter;
+    }
+    const testRequests = await TestRequest.find(testRequestsQuery)
+      .populate('patientId', 'name uhId')
+      .populate('doctorId', 'name')
+      .select('billing createdAt patientId doctorId');
 
     // Detailed transaction list
     const detailedTransactions = [];
@@ -879,10 +942,11 @@ export const getFinancialReports = async (req, res) => {
       if (patient.billing) {
         patient.billing.forEach(bill => {
           const billDate = new Date(bill.createdAt || patient.createdAt);
-          if (
-            (!dateFilter.$gte || billDate >= dateFilter.$gte) &&
-            (!dateFilter.$lte || billDate <= dateFilter.$lte)
-          ) {
+          const matchesDateFilter = !hasDateFilter || 
+                                   ((!dateFilter.$gte || billDate >= dateFilter.$gte) &&
+                                    (!dateFilter.$lte || billDate <= dateFilter.$lte));
+          
+          if (matchesDateFilter) {
             // Add to detailed transactions
             detailedTransactions.push({
               date: billDate,
@@ -912,10 +976,11 @@ export const getFinancialReports = async (req, res) => {
       if (patient.reassignedBilling) {
         patient.reassignedBilling.forEach(bill => {
           const billDate = new Date(bill.createdAt || patient.createdAt);
-          if (
-            (!dateFilter.$gte || billDate >= dateFilter.$gte) &&
-            (!dateFilter.$lte || billDate <= dateFilter.$lte)
-          ) {
+          const matchesDateFilter = !hasDateFilter || 
+                                   ((!dateFilter.$gte || billDate >= dateFilter.$gte) &&
+                                    (!dateFilter.$lte || billDate <= dateFilter.$lte));
+          
+          if (matchesDateFilter) {
             // Add to detailed transactions
             detailedTransactions.push({
               date: billDate,

@@ -6,6 +6,10 @@ import {
   sendAppointmentNotificationToCenter,
   sendAppointmentCancellation 
 } from '../utils/emailService.js';
+import { 
+  sendAppointmentBookingSMS,
+  sendAppointmentConfirmationSMS 
+} from '../utils/smsService.js';
 
 // Get all centers for franchise selection
 export const getAllCentersForBooking = asyncHandler(async (req, res) => {
@@ -83,9 +87,9 @@ export const bookAppointment = asyncHandler(async (req, res) => {
 
     // Validate required fields
     const requiredFields = [
-      'patientName', 'patientEmail', 'patientPhone', 'patientAge', 
+      'patientName', 'patientPhone', 'patientAge', 
       'patientGender', 'patientAddress', 'centerId', 'preferredDate', 
-      'preferredTime', 'reasonForVisit'
+      'preferredTime'
     ];
 
     for (const field of requiredFields) {
@@ -97,6 +101,15 @@ export const bookAppointment = asyncHandler(async (req, res) => {
       }
     }
 
+    // Validate phone number - must be exactly 10 digits
+    const phoneRegex = /^\d{10}$/;
+    if (!phoneRegex.test(patientPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must be exactly 10 digits'
+      });
+    }
+
     // Verify center exists
     const center = await Center.findById(centerId);
     if (!center) {
@@ -104,6 +117,36 @@ export const bookAppointment = asyncHandler(async (req, res) => {
         success: false,
         message: 'Center not found'
       });
+    }
+
+    // Check for existing active appointments with the same phone number
+    const existingAppointment = await PatientAppointment.findOne({
+      patientPhone: patientPhone,
+      status: { $in: ['pending', 'confirmed'] }
+    });
+
+    if (existingAppointment) {
+      return res.status(400).json({
+        success: false,
+        message: 'You already have an active appointment. Please wait for your current appointment to be completed or cancelled before booking a new one.',
+        existingAppointment: {
+          confirmationCode: existingAppointment.confirmationCode,
+          status: existingAppointment.status,
+          preferredDate: existingAppointment.preferredDate,
+          centerName: existingAppointment.centerName
+        }
+      });
+    }
+
+    // Process uploaded medical history documents
+    let medicalHistoryDocs = [];
+    if (req.files && req.files.length > 0) {
+      medicalHistoryDocs = req.files.map(file => ({
+        filename: file.filename,
+        originalName: file.originalname,
+        path: file.path,
+        size: file.size
+      }));
     }
 
     // Create appointment
@@ -128,16 +171,24 @@ export const bookAppointment = asyncHandler(async (req, res) => {
       contactMethod: contactMethod || 'phone',
       preferredContactTime,
       notes,
-      patientLocation
+      patientLocation,
+      medicalHistoryDocs
     });
 
-    // Send email notifications
+    // Send email and SMS notifications
     try {
       // Send confirmation email to patient
       if (appointment.patientEmail) {
         console.log('Sending confirmation email to patient:', appointment.patientEmail);
         await sendAppointmentConfirmation(appointment);
         console.log('Confirmation email sent successfully');
+      }
+      
+      // Send SMS confirmation to patient
+      if (appointment.patientPhone) {
+        console.log('Sending booking confirmation SMS to patient:', appointment.patientPhone);
+        await sendAppointmentBookingSMS(appointment);
+        console.log('Booking confirmation SMS sent successfully');
       }
       
       // Send notification email to center
@@ -326,6 +377,25 @@ export const approveAppointment = asyncHandler(async (req, res) => {
     appointment.confirmedAt = new Date();
     await appointment.save();
 
+    // Send SMS confirmation to patient
+    try {
+      if (appointment.patientPhone) {
+        console.log('Sending confirmation SMS to patient:', appointment.patientPhone);
+        await sendAppointmentConfirmationSMS(appointment);
+        console.log('Confirmation SMS sent successfully');
+      }
+      
+      // Send confirmation email to patient
+      if (appointment.patientEmail) {
+        console.log('Sending confirmation email to patient:', appointment.patientEmail);
+        await sendAppointmentConfirmation(appointment);
+        console.log('Confirmation email sent successfully');
+      }
+    } catch (notificationError) {
+      console.error('Failed to send confirmation notifications:', notificationError);
+      // Don't fail the approval if notifications fail
+    }
+
     res.json({
       success: true,
       message: 'Appointment approved successfully',
@@ -375,6 +445,27 @@ export const updateAppointmentStatus = asyncHandler(async (req, res) => {
     }
 
     await appointment.save();
+
+    // Send confirmation email and SMS to patient if appointment is confirmed
+    if (status === 'confirmed') {
+      try {
+        // Send SMS confirmation
+        if (appointment.patientPhone) {
+          console.log('Sending confirmation SMS to patient:', appointment.patientPhone);
+          await sendAppointmentConfirmationSMS(appointment);
+          console.log('Confirmation SMS sent successfully');
+        }
+        
+        // Send email confirmation
+        if (appointment.patientEmail) {
+          await sendAppointmentConfirmation(appointment);
+          console.log('Confirmation email sent successfully');
+        }
+      } catch (notificationError) {
+        console.error('Error sending confirmation notifications:', notificationError);
+        // Don't fail the request if notifications fail
+      }
+    }
 
     res.json({
       success: true,
@@ -426,13 +517,24 @@ export const updateAppointmentDetails = asyncHandler(async (req, res) => {
 
     await appointment.save();
 
-    // Send confirmation email to patient if appointment is confirmed
+    // Send confirmation email and SMS to patient if appointment is confirmed
     if (status === 'confirmed') {
       try {
-        await sendAppointmentConfirmation(appointment);
-      } catch (emailError) {
-        console.error('Error sending confirmation email:', emailError);
-        // Don't fail the request if email fails
+        // Send SMS confirmation
+        if (appointment.patientPhone) {
+          console.log('Sending confirmation SMS to patient:', appointment.patientPhone);
+          await sendAppointmentConfirmationSMS(appointment);
+          console.log('Confirmation SMS sent successfully');
+        }
+        
+        // Send email confirmation
+        if (appointment.patientEmail) {
+          await sendAppointmentConfirmation(appointment);
+          console.log('Confirmation email sent successfully');
+        }
+      } catch (notificationError) {
+        console.error('Error sending confirmation notifications:', notificationError);
+        // Don't fail the request if notifications fail
       }
     }
 

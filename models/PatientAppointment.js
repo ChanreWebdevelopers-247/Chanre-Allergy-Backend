@@ -8,7 +8,7 @@ const patientAppointmentSchema = new mongoose.Schema({
   },
   patientEmail: {
     type: String,
-    required: true
+    required: false
   },
   patientPhone: {
     type: String,
@@ -72,7 +72,7 @@ const patientAppointmentSchema = new mongoose.Schema({
   },
   reasonForVisit: {
     type: String,
-    required: true
+    required: false
   },
   symptoms: {
     type: String
@@ -136,7 +136,19 @@ const patientAppointmentSchema = new mongoose.Schema({
     city: String,
     state: String,
     pincode: String
-  }
+  },
+  
+  // Medical history documents
+  medicalHistoryDocs: [{
+    filename: String,
+    originalName: String,
+    path: String,
+    size: Number,
+    uploadedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }]
 }, { 
   timestamps: true 
 });
