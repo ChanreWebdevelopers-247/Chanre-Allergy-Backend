@@ -100,6 +100,11 @@ const paymentLogSchema = new mongoose.Schema({
     description: 'Uploaded receipt file path'
   },
   
+  description: {
+    type: String,
+    description: 'Description of the payment/service'
+  },
+  
   // Notes and verification
   notes: {
     type: String,

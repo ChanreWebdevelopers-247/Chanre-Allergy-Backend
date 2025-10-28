@@ -240,3 +240,67 @@ export const getCenterByAdminId = async (req, res) => {
     res.status(500).json({ message: "Failed to fetch center by admin ID", error: err.message });
   }
 };
+
+// Update center fees
+export const updateCenterFees = asyncHandler(async (req, res) => {
+  const center = await Center.findById(req.params.id);
+  if (!center) {
+    res.status(404);
+    throw new Error("Center not found");
+  }
+
+  // Update fees if provided
+  if (req.body.fees) {
+    if (req.body.fees.registrationFee !== undefined) {
+      center.fees.registrationFee = req.body.fees.registrationFee;
+    }
+    if (req.body.fees.consultationFee !== undefined) {
+      center.fees.consultationFee = req.body.fees.consultationFee;
+    }
+    if (req.body.fees.serviceFee !== undefined) {
+      center.fees.serviceFee = req.body.fees.serviceFee;
+    }
+  }
+
+  // Update discount settings if provided
+  if (req.body.discountSettings) {
+    Object.keys(req.body.discountSettings).forEach(key => {
+      if (center.discountSettings[key] !== undefined && req.body.discountSettings[key] !== undefined) {
+        center.discountSettings[key] = req.body.discountSettings[key];
+      }
+    });
+  }
+
+  // Update contact information if provided
+  if (req.body.website !== undefined) center.website = req.body.website;
+  if (req.body.labWebsite !== undefined) center.labWebsite = req.body.labWebsite;
+  if (req.body.fax !== undefined) center.fax = req.body.fax;
+  if (req.body.missCallNumber !== undefined) center.missCallNumber = req.body.missCallNumber;
+  if (req.body.mobileNumber !== undefined) center.mobileNumber = req.body.mobileNumber;
+
+  const updatedCenter = await center.save();
+  res.json(updatedCenter);
+});
+
+// Get center fees
+export const getCenterFees = async (req, res) => {
+  try {
+    const center = await Center.findById(req.params.id);
+    if (!center) {
+      return res.status(404).json({ message: "Center not found" });
+    }
+
+    res.json({
+      fees: center.fees,
+      discountSettings: center.discountSettings,
+      website: center.website,
+      labWebsite: center.labWebsite,
+      fax: center.fax,
+      missCallNumber: center.missCallNumber,
+      mobileNumber: center.mobileNumber
+    });
+  } catch (error) {
+    console.error('Error fetching center fees:', error);
+    res.status(500).json({ message: "Failed to fetch center fees", error: error.message });
+  }
+};

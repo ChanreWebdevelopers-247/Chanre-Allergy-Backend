@@ -110,7 +110,8 @@ const testRequestSchema = new mongoose.Schema({
       enum: ['not_generated', 'generated', 'payment_received', 'paid', 'partially_paid', 'verified', 'cancelled', 'refunded'],
       default: 'not_generated'
     },
-    amount: { type: Number, default: 0 },
+    subTotal: { type: Number, default: 0 }, // Total before discount and tax
+    amount: { type: Number, default: 0 }, // Grand total after discount and tax
     paidAmount: { type: Number, default: 0 }, // ✅ NEW: Track paid amount
     paymentStatus: { 
       type: String, 

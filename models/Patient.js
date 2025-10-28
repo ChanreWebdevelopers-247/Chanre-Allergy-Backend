@@ -97,6 +97,13 @@ const billingSchema = new mongoose.Schema({
   refundMethod: { type: String },
   refundReason: { type: String },
   refundNotes: { type: String },
+  
+  // Discount fields
+  discountType: { type: String, enum: ['percentage', 'amount'], default: 'percentage' },
+  discountPercentage: { type: Number, default: 0 },
+  discountAmount: { type: Number, default: 0 },
+  discountReason: { type: String, default: '' },
+  
   createdAt: { type: Date, default: Date.now }
 });
 

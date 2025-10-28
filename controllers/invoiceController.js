@@ -70,7 +70,7 @@ export const generateInvoicePDF = async (req, res) => {
     const testRequest = await TestRequest.findById(testRequestId)
       .populate('patientId', 'name phone address age gender')
       .populate('doctorId', 'name specializations email phone')
-      .populate('centerId', 'name code');
+      .populate('centerId', 'name code phone fax website missCallNumber mobileNumber');
     
     if (!testRequest) {
       return res.status(404).json({ message: 'Test request not found' });
@@ -100,23 +100,30 @@ export const generateInvoicePDF = async (req, res) => {
     doc.pipe(res);
     
     // ===== HEADER SECTION =====
-    // Hospital Information (Top Left)
+    // "Invoice" text on top left
+    doc.fillColor('#000000')
+       .fontSize(14)
+       .font('Helvetica')
+       .text('Invoice', 20, 20);
+    
+    // Hospital Information (Left)
     const hospitalName = testRequest.centerId?.name || 'Chanre Hospital';
     const hospitalAddress = testRequest.centerId?.address || 'Rajajinagar, Bengaluru';
-    const hospitalPhone = testRequest.centerId?.phone || '1234567890';
-    const hospitalEmail = testRequest.centerId?.email || 'chanrehospital@gmail.com';
+    const hospitalPhone = testRequest.centerId?.phone || '08040810611';
+    const hospitalFax = testRequest.centerId?.fax || '080-42516600';
+    const hospitalWebsite = testRequest.centerId?.website || 'www.chanreallergy.com';
     
     doc.fillColor('#000000')
-       .fontSize(24)
+       .fontSize(26)
        .font('Helvetica-Bold')
-       .text(hospitalName, 20, 20);
+       .text(hospitalName, 20, 40);
     
     doc.fillColor('#000000')
-       .fontSize(10)
+       .fontSize(11)
        .font('Helvetica')
-       .text(hospitalAddress, 20, 45)
-       .text(`Phone: ${hospitalPhone}`, 20, 58)
-       .text(`Email: ${hospitalEmail}`, 20, 71);
+       .text(hospitalAddress, 20, 72)
+       .text(`Phone: ${hospitalPhone} | Fax: ${hospitalFax}`, 20, 87)
+       .text(`Website: ${hospitalWebsite}`, 20, 102);
     
     // Bill Details (Top Right)
     const billNumber = testRequest.billing.invoiceNumber || `BILL-${Date.now()}`;
@@ -129,12 +136,16 @@ export const generateInvoicePDF = async (req, res) => {
     
     doc.fillColor('#000000')
        .fontSize(10)
+       .font('Helvetica-Bold')
+       .text(`Bill No: ${billNumber}`, 400, 20, { align: 'right', width: 170 });
+    
+    doc.fillColor('#000000')
+       .fontSize(10)
        .font('Helvetica')
-       .text(`Bill No: ${billNumber}`, 400, 20, { align: 'right', width: 170 })
-       .text(`BILL Date: ${billDate}, ${billTime}`, 400, 33, { align: 'right', width: 170 });
+       .text(`BILL Date: ${billDate}, ${billTime}`, 400, 42, { align: 'right', width: 170 });
     
     // ===== PATIENT & CONSULTANT INFORMATION =====
-    const infoY = 100;
+    const infoY = 125;
     
     // Patient Information (Left)
     doc.fillColor('#000000')
@@ -151,10 +162,10 @@ export const generateInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Name: ${patientName}`, 20, infoY + 20)
-       .text(`Age: ${patientAge} | Gender: ${patientGender}`, 20, infoY + 35)
-       .text(`Contact: ${patientPhone}`, 20, infoY + 50)
-       .text(`File No: ${fileNumber}`, 20, infoY + 65);
+       .text(`Name: ${patientName}`, 20, infoY + 16)
+       .text(`Age: ${patientAge} | Gender: ${patientGender}`, 20, infoY + 29)
+       .text(`Contact: ${patientPhone}`, 20, infoY + 42)
+       .text(`File No: ${fileNumber}`, 20, infoY + 55);
     
     // Consultant Information (Right)
     doc.fillColor('#000000')
@@ -169,36 +180,45 @@ export const generateInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Doctor: ${doctorName}`, 300, infoY + 20)
-       .text(`Department: ${department}`, 300, infoY + 35)
-       .text(`User ID: ${userId}`, 300, infoY + 50)
-       .text(`Ref. Doctor: N/A`, 300, infoY + 65);
+       .text(`Doctor: ${doctorName}`, 300, infoY + 16)
+       .text(`Department: ${department}`, 300, infoY + 29)
+       .text(`User ID: ${userId}`, 300, infoY + 42)
+       .text(`Ref. Doctor: N/A`, 300, infoY + 55);
     
     // ===== CURRENT SERVICES BILLED SECTION =====
-    const servicesY = infoY + 100;
+    const servicesY = infoY + 70;
     
+    // Centered bold heading for Investigations Billing (with top and bottom space)
+    const investigationsHeadingY = servicesY + 10;
     doc.fillColor('#000000')
-       .fontSize(12)
+       .fontSize(14)
        .font('Helvetica-Bold')
-       .text('Current Services Billed', 20, servicesY);
+       .text('Investigations Billing', 20, investigationsHeadingY, { align: 'center', width: 550 });
     
-    // Calculate totals
-    const subtotal = testRequest.billing.items ? 
+    // Table header for Current Services Billed (added bottom space after heading)
+    const tableHeadingY = investigationsHeadingY + 25;
+    doc.fillColor('#000000')
+       .fontSize(11)
+       .font('Helvetica-Bold')
+       .text('Current Services Billed', 20, tableHeadingY);
+    
+    // Calculate totals - use subTotal if available, otherwise calculate from items
+    const subtotal = testRequest.billing.subTotal || (testRequest.billing.items ? 
       testRequest.billing.items.reduce((sum, item) => sum + ((item.quantity || 1) * (item.unitPrice || 0)), 0) :
-      (testRequest.billing.amount || 0);
+      (testRequest.billing.amount || 0));
     
     const taxes = testRequest.billing.taxes || 0;
     const discounts = testRequest.billing.discounts || 0;
-    const grandTotal = subtotal + taxes - discounts;
+    const grandTotal = testRequest.billing.amount || (subtotal + taxes - discounts);
     const paidAmount = testRequest.billing.paidAmount || 0;
     const remainingAmount = grandTotal - paidAmount;
     
     // Services Table Header
-    const tableY = servicesY + 20;
+    const tableY = tableHeadingY + 15;
     doc.rect(20, tableY, 550, 25).fill('#f3f4f6').stroke('#000000');
     
     doc.fillColor('#000000')
-       .fontSize(10)
+       .fontSize(9)
        .font('Helvetica-Bold')
        .text('S.NO', 30, tableY + 8)
        .text('SERVICE NAME', 70, tableY + 8)
@@ -276,23 +296,7 @@ export const generateInvoicePDF = async (req, res) => {
     }
     
     // ===== BILL SUMMARY SECTIONS =====
-    const summaryY = currentRowY + 20;
-    
-    // Current Bill Summary (Left)
-    doc.fillColor('#000000')
-       .fontSize(12)
-       .font('Helvetica-Bold')
-       .text('Current Bill Summary', 20, summaryY);
-    
-    doc.fillColor('#000000')
-       .fontSize(10)
-       .font('Helvetica')
-       .text(`Total Amount: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 20)
-       .text(`Discount(-): ₹${discounts.toFixed(2)}`, 20, summaryY + 35)
-       .text(`Tax Amount: ₹${taxes.toFixed(2)}`, 20, summaryY + 50)
-       .text(`Grand Total: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 65)
-       .font('Helvetica-Bold')
-       .text(`Amount Paid: ₹${paidAmount.toFixed(2)}`, 20, summaryY + 80);
+    const summaryY = currentRowY + 10;
     
     // Determine bill status
     let billStatus = 'PENDING';
@@ -306,72 +310,132 @@ export const generateInvoicePDF = async (req, res) => {
       billStatus = 'PARTIAL';
     }
     
-    // Status with color coding
-    if (billStatus === 'PAID') {
-      doc.fillColor('#059669').text(`Status: ${billStatus}`, 20, summaryY + 95);
-    } else if (billStatus === 'CANCELLED') {
-      doc.fillColor('#dc2626').text(`Status: ${billStatus}`, 20, summaryY + 95);
-    } else {
-      doc.fillColor('#d97706').text(`Status: ${billStatus}`, 20, summaryY + 95);
+    // Calculate refunded amount
+    const refundedAmount = testRequest.billing.refundAmount || 0;
+    const penalty = paidAmount - refundedAmount;
+    
+    // Left Column - Bill Status and Amount in Words
+    let wordY = summaryY;
+    
+    // Show Bill Status and Amount in Words
+    if (billStatus === 'CANCELLED') {
+      doc.fillColor('#000000')
+         .fontSize(10)
+         .font('Helvetica-Bold')
+         .text('Bill Status: CANCELLED', 20, wordY);
+      wordY += 12;
     }
     
-    // Payment Summary (Right)
-    doc.fillColor('#000000')
-       .fontSize(12)
-       .font('Helvetica-Bold')
-       .text('Payment Summary', 300, summaryY);
+    if (paidAmount > 0) {
+      doc.fillColor('#000000')
+         .fontSize(10)
+         .font('Helvetica')
+         .text(`Amount Paid: (Rs.) ${numberToWords(paidAmount)} Only`, 20, wordY);
+      wordY += 12;
+    }
+    
+    if (refundedAmount > 0) {
+      doc.fillColor('#000000')
+         .fontSize(10)
+         .font('Helvetica')
+         .text(`Amount Refunded: (Rs.) ${numberToWords(refundedAmount)} Only`, 20, wordY);
+    }
+    
+    // Right Column - Numeric Summary
+    let summaryRightY = summaryY;
     
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Total Bill Amount: ₹${grandTotal.toFixed(2)}`, 300, summaryY + 20)
-       .text(`Bill Status: ${billStatus}`, 300, summaryY + 35)
-       .text(`Amount Paid: ₹${paidAmount.toFixed(2)}`, 300, summaryY + 50);
+       .text(`Total Amount: ₹${subtotal.toFixed(2)}`, 300, summaryRightY);
+    summaryRightY += 12;
     
-    // Generation Details
+    if (discounts > 0) {
+      doc.text(`Discount(-): ₹${discounts.toFixed(2)}`, 300, summaryRightY);
+      summaryRightY += 12;
+    }
+    
+    doc.text(`Tax Amount: ₹${taxes.toFixed(2)}`, 300, summaryRightY);
+    summaryRightY += 12;
+    
+    doc.font('Helvetica-Bold')
+       .text(`Grand Total: ₹${grandTotal.toFixed(2)}`, 300, summaryRightY);
+    summaryRightY += 12;
+    
+    doc.font('Helvetica-Bold')
+       .text(`Amount Paid: ₹${paidAmount.toFixed(2)}`, 300, summaryRightY);
+    summaryRightY += 12;
+    
+    if (refundedAmount > 0) {
+      doc.font('Helvetica-Bold')
+         .text(`Amount Refunded: ₹${refundedAmount.toFixed(2)}`, 300, summaryRightY);
+      summaryRightY += 12;
+      
+      if (penalty > 0 && billStatus === 'CANCELLED') {
+        doc.font('Helvetica-Bold')
+           .fillColor('#dc2626')
+           .text(`Penalty Deducted: ₹${penalty.toFixed(2)}`, 300, summaryRightY);
+        summaryRightY += 10;
+        
+        doc.font('Helvetica')
+           .fillColor('#000000')
+           .fontSize(8)
+           .text('Penalty Reason: Registration Fee (₹150) held as penalty', 300, summaryRightY);
+        summaryRightY += 10;
+      }
+    }
+    
+    const paymentMethod = testRequest.billing.paymentMethod || 'cash';
+    const refundMethod = testRequest.billing.refundMethod || 'Cash';
+    
+    doc.font('Helvetica')
+       .fillColor('#000000')
+       .fontSize(9)
+       .text(`Payment Method: ${paymentMethod}`, 300, summaryRightY);
+    summaryRightY += 12;
+    
+    if (refundedAmount > 0) {
+      doc.text(`Refund Method: ${refundMethod}`, 300, summaryRightY);
+      summaryRightY += 12;
+    }
+    
+    if (billStatus === 'CANCELLED') {
+      doc.font('Helvetica-Bold')
+         .fillColor('#dc2626')
+         .fontSize(10)
+         .text(`Status: BILL CANCELLED`, 300, summaryRightY);
+    } else if (billStatus === 'PAID') {
+      doc.font('Helvetica-Bold')
+         .fillColor('#059669')
+         .fontSize(10)
+         .text(`Status: ${billStatus}`, 300, summaryRightY);
+    } else if (billStatus === 'REFUNDED') {
+      doc.font('Helvetica-Bold')
+         .fillColor('#d97706')
+         .fontSize(10)
+         .text(`Status: ${billStatus}`, 300, summaryRightY);
+    }
+    
+    // ===== TRANSACTION HISTORY SECTION =====
+    const transactionHistoryY = summaryY + 70;
+    
     doc.fillColor('#000000')
-       .fontSize(12)
+       .fontSize(11)
        .font('Helvetica-Bold')
-       .text('Generation Details', 300, summaryY + 80);
+       .text('Transaction History', 20, transactionHistoryY);
     
-    const generatedBy = testRequest.centerId?.name || 'Receptionist 01';
-    const generatedDate = new Date().toLocaleDateString('en-GB');
-    const generatedTime = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-    
-    doc.fillColor('#000000')
-       .fontSize(10)
-       .font('Helvetica')
-       .text(`Generated By: ${generatedBy}`, 300, summaryY + 100)
-       .text(`Date: ${generatedDate}`, 300, summaryY + 115)
-       .text(`Time: ${generatedTime}`, 300, summaryY + 130);
-    
-    // Paid Amount in Words
-    doc.fillColor('#000000')
-       .fontSize(10)
-       .font('Helvetica')
-       .text(`Paid Amount (in words): (Rs.) ${numberToWords(paidAmount)} Only`, 20, summaryY + 150);
-    
-    // ===== PAYMENT HISTORY SECTION =====
-    const paymentHistoryY = summaryY + 180;
-    
-    doc.fillColor('#000000')
-       .fontSize(12)
-       .font('Helvetica-Bold')
-       .text('Payment History', 20, paymentHistoryY);
-    
-    // Payment History Table Header
-    const paymentTableY = paymentHistoryY + 20;
+    // Transaction History Table Header
+    const paymentTableY = transactionHistoryY + 20;
     doc.rect(20, paymentTableY, 550, 25).fill('#f3f4f6').stroke('#000000');
     
     doc.fillColor('#000000')
-       .fontSize(10)
+       .fontSize(9)
        .font('Helvetica-Bold')
-       .text('DATE', 30, paymentTableY + 8)
-       .text('TIME', 80, paymentTableY + 8)
-       .text('AMOUNT', 150, paymentTableY + 8)
-       .text('PAYMENT METHOD', 220, paymentTableY + 8)
-       .text('TRANSACTION ID', 350, paymentTableY + 8)
-       .text('STATUS', 480, paymentTableY + 8);
+       .text('DATE & TIME', 30, paymentTableY + 8)
+       .text('TYPE', 140, paymentTableY + 8)
+       .text('DESCRIPTION', 200, paymentTableY + 8)
+       .text('AMOUNT', 350, paymentTableY + 8)
+       .text('METHOD', 480, paymentTableY + 8);
     
     let paymentRowY = paymentTableY + 25;
     
@@ -379,42 +443,49 @@ export const generateInvoicePDF = async (req, res) => {
     const PaymentLog = (await import('../models/PaymentLog.js')).default;
     
     try {
-      // Fetch payment logs for this test request
+      // Fetch payment logs ONLY for this specific test request (no fallback to patient payments)
       const paymentLogs = await PaymentLog.find({ 
-        $or: [
-          { testRequestId: testRequestId },
-          { patientId: testRequest.patientId?._id || testRequest.patientId }
-        ],
-        status: 'completed'
+        testRequestId: testRequestId,
+        status: { $in: ['completed', 'refunded'] }
       }).sort({ createdAt: -1 });
       
       if (paymentLogs.length > 0) {
         // Show individual payment transactions
         paymentLogs.forEach((payment, index) => {
           const paymentDate = new Date(payment.createdAt).toLocaleDateString('en-GB');
-          const paymentTime = new Date(payment.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true });
+          const paymentTime = new Date(payment.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
           const paymentMethod = payment.paymentMethod || 'Cash';
-          const transactionId = payment.transactionId || `TXN-${index + 1}`;
-          const status = payment.status === 'completed' ? 'Completed' : 'Pending';
           
-          // Payment history row
+          // Transaction row
           doc.rect(20, paymentRowY, 550, 20).stroke('#000000');
+          
+          const isRefund = payment.status === 'refunded';
+          const transactionType = isRefund ? 'Refund' : 'Payment';
           
           doc.fillColor('#000000')
              .fontSize(9)
              .font('Helvetica')
-             .text(paymentDate, 30, paymentRowY + 6)
-             .text(paymentTime, 80, paymentRowY + 6)
-             .text(`₹${payment.amount.toFixed(2)}`, 150, paymentRowY + 6)
-             .text(paymentMethod, 220, paymentRowY + 6, { width: 120, ellipsis: true })
-             .text(transactionId, 350, paymentRowY + 6, { width: 120, ellipsis: true });
+             .text(`${paymentDate} ${paymentTime}`, 30, paymentRowY + 6)
+             .text(transactionType, 140, paymentRowY + 6);
           
-          // Status with color coding
-          if (status === 'Completed') {
-            doc.fillColor('#059669').text(status, 480, paymentRowY + 6);
-          } else {
-            doc.fillColor('#d97706').text(status, 480, paymentRowY + 6);
+          // Get description - use payment.description if available, otherwise infer from payment type
+          let description = payment.description || 'Lab Test Payment';
+          if (!payment.description) {
+            if (payment.paymentType === 'consultation') description = 'Doctor Consultation Fee';
+            else if (payment.paymentType === 'registration') description = 'Registration Fee';
+            else if (payment.paymentType === 'service') description = 'Service Charges';
+            else if (payment.paymentType === 'lab_test' || payment.paymentType === 'test') description = 'Lab Test';
           }
+          
+          doc.text(description, 200, paymentRowY + 6, { width: 130, ellipsis: true });
+          
+          // Show amount with appropriate sign
+          const amountSign = isRefund ? '-' : '+';
+          doc.text(`${amountSign}₹${payment.amount.toFixed(2)}`, 350, paymentRowY + 6);
+          
+          // Payment method
+          doc.fillColor('#000000')
+             .text(paymentMethod, 480, paymentRowY + 6, { width: 70, ellipsis: true });
           
           paymentRowY += 20;
         });
@@ -442,28 +513,56 @@ export const generateInvoicePDF = async (req, res) => {
     }
     
     // ===== FOOTER SECTION =====
-    const footerY = paymentRowY + 30;
+    const footerY = paymentRowY + 20;
     
-    // Invoice Terms (Bottom Left)
+    // Generation Details (Left)
+    const generatedBy = testRequest.generatedBy || 'Receptionist';
+    
     doc.fillColor('#000000')
-       .fontSize(12)
+       .fontSize(10)
+       .font('Helvetica')
+       .text(`Generated By: ${generatedBy}`, 20, footerY)
+       .text(`Date: ${billDate}`, 20, footerY + 13)
+       .text(`Time: ${billTime}`, 20, footerY + 26);
+    
+    // Invoice Terms Box (Right)
+    const invoiceBoxY = footerY;
+    const invoiceBoxHeight = 85;
+    
+    // Draw box
+    doc.rect(340, invoiceBoxY, 230, invoiceBoxHeight).stroke('#000000');
+    
+    doc.fillColor('#000000')
+       .fontSize(11)
        .font('Helvetica-Bold')
-       .text('Invoice Terms', 20, footerY);
+       .text('Invoice Terms', 350, invoiceBoxY + 8);
     
     doc.fillColor('#000000')
-       .fontSize(10)
+       .fontSize(9)
        .font('Helvetica')
-       .text('• Original invoice document', 20, footerY + 20)
-       .text('• Payment due upon receipt', 20, footerY + 35)
-       .text('• Keep for your records', 20, footerY + 50)
-       .text('• No refunds after 7 days', 20, footerY + 65);
+       .text('• Original invoice document', 350, invoiceBoxY + 22)
+       .text('• Payment due upon receipt', 350, invoiceBoxY + 34)
+       .text('• Keep for your records', 350, invoiceBoxY + 46)
+       .text('• No refunds after 7 days', 350, invoiceBoxY + 58);
     
-    // Signature Area (Bottom Right)
+    // Signature Area (Below Invoice Terms Box)
+    doc.fillColor('#000000')
+       .fontSize(9)
+       .font('Helvetica')
+       .text('Signature:', 350, invoiceBoxY + invoiceBoxHeight + 8)
+       .moveTo(350, invoiceBoxY + invoiceBoxHeight + 20)
+       .lineTo(550, invoiceBoxY + invoiceBoxHeight + 20)
+       .stroke('#000000')
+       .text('For Chanre Hospital', 350, invoiceBoxY + invoiceBoxHeight + 25);
+    
+    // Home Sample Collection info (Bottom Center)
+    const homeSampleY = invoiceBoxY + invoiceBoxHeight + 50;
     doc.fillColor('#000000')
        .fontSize(10)
+       .font('Helvetica-Bold')
+       .text('"For Home Sample Collection"', 20, homeSampleY, { align: 'center', width: 550 })
        .font('Helvetica')
-       .text('For Chanre Hospital', 400, footerY + 50, { align: 'right', width: 170 })
-       .text('Authorized Signature', 400, footerY + 70, { align: 'right', width: 170 });
+       .text(`Miss Call: ${testRequest.centerId?.missCallNumber || '080-42516666'} | Mobile: ${testRequest.centerId?.mobileNumber || '9686197153'}`, 20, homeSampleY + 15, { align: 'center', width: 550 });
     
     // Finalize PDF
     doc.end();
@@ -613,7 +712,7 @@ export const generateConsultationInvoicePDF = async (req, res) => {
     doc.rect(20, tableY, 550, 25).fill('#f3f4f6').stroke('#000000');
     
     doc.fillColor('#000000')
-       .fontSize(10)
+       .fontSize(9)
        .font('Helvetica-Bold')
        .text('S.NO', 30, tableY + 8)
        .text('SERVICE NAME', 70, tableY + 8)
@@ -668,7 +767,7 @@ export const generateConsultationInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Total Amount: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 20)
+       .text(`Total Amount: ₹${subtotal.toFixed(2)}`, 20, summaryY + 20)
        .text(`Discount(-): ₹0.00`, 20, summaryY + 35)
        .text(`Tax Amount: ₹0.00`, 20, summaryY + 50)
        .text(`Grand Total: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 65)
@@ -732,21 +831,20 @@ export const generateConsultationInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(12)
        .font('Helvetica-Bold')
-       .text('Payment History', 20, paymentHistoryY);
+       .text('Transaction History', 20, paymentHistoryY);
     
-    // Payment History Table Header
+    // Transaction History Table Header
     const paymentTableY = paymentHistoryY + 20;
     doc.rect(20, paymentTableY, 550, 25).fill('#f3f4f6').stroke('#000000');
     
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica-Bold')
-       .text('DATE', 30, paymentTableY + 8)
-       .text('TIME', 80, paymentTableY + 8)
-       .text('AMOUNT', 150, paymentTableY + 8)
-       .text('PAYMENT METHOD', 220, paymentTableY + 8)
-       .text('TRANSACTION ID', 350, paymentTableY + 8)
-       .text('STATUS', 480, paymentTableY + 8);
+       .text('DATE & TIME', 30, paymentTableY + 8)
+       .text('TYPE', 140, paymentTableY + 8)
+       .text('DESCRIPTION', 200, paymentTableY + 8)
+       .text('AMOUNT', 350, paymentTableY + 8)
+       .text('METHOD', 480, paymentTableY + 8);
     
     let paymentRowY = paymentTableY + 25;
     
@@ -766,27 +864,21 @@ export const generateConsultationInvoicePDF = async (req, res) => {
           const paymentDate = new Date(payment.createdAt).toLocaleDateString('en-GB');
           const paymentTime = new Date(payment.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true });
           const paymentMethod = payment.paymentMethod || 'Cash';
-          const transactionId = payment.transactionId || `TXN-${index + 1}`;
-          const status = payment.status === 'completed' ? 'Completed' : 'Pending';
           
-          // Payment history row
+          // Transaction row
           doc.rect(20, paymentRowY, 550, 20).stroke('#000000');
           
           doc.fillColor('#000000')
              .fontSize(9)
              .font('Helvetica')
-             .text(paymentDate, 30, paymentRowY + 6)
-             .text(paymentTime, 80, paymentRowY + 6)
-             .text(`₹${payment.amount.toFixed(2)}`, 150, paymentRowY + 6)
-             .text(paymentMethod, 220, paymentRowY + 6, { width: 120, ellipsis: true })
-             .text(transactionId, 350, paymentRowY + 6, { width: 120, ellipsis: true });
+             .text(`${paymentDate} ${paymentTime}`, 30, paymentRowY + 6)
+             .text('Payment', 140, paymentRowY + 6)
+             .text(payment.description || 'Lab Test Payment', 200, paymentRowY + 6, { width: 130, ellipsis: true })
+             .text(`+₹${payment.amount.toFixed(2)}`, 350, paymentRowY + 6);
           
-          // Status with color coding
-          if (status === 'Completed') {
-            doc.fillColor('#059669').text(status, 480, paymentRowY + 6);
-          } else {
-            doc.fillColor('#d97706').text(status, 480, paymentRowY + 6);
-          }
+          // Payment method
+          doc.fillColor('#000000')
+             .text(paymentMethod, 480, paymentRowY + 6, { width: 70, ellipsis: true });
           
           paymentRowY += 20;
         });
@@ -985,7 +1077,7 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
     doc.rect(20, tableY, 550, 25).fill('#f3f4f6').stroke('#000000');
     
     doc.fillColor('#000000')
-       .fontSize(10)
+       .fontSize(9)
        .font('Helvetica-Bold')
        .text('S.NO', 30, tableY + 8)
        .text('SERVICE NAME', 70, tableY + 8)
@@ -1040,7 +1132,7 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Total Amount: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 20)
+       .text(`Total Amount: ₹${subtotal.toFixed(2)}`, 20, summaryY + 20)
        .text(`Discount(-): ₹0.00`, 20, summaryY + 35)
        .text(`Tax Amount: ₹0.00`, 20, summaryY + 50)
        .text(`Grand Total: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 65)
@@ -1104,21 +1196,20 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(12)
        .font('Helvetica-Bold')
-       .text('Payment History', 20, paymentHistoryY);
+       .text('Transaction History', 20, paymentHistoryY);
     
-    // Payment History Table Header
+    // Transaction History Table Header
     const paymentTableY = paymentHistoryY + 20;
     doc.rect(20, paymentTableY, 550, 25).fill('#f3f4f6').stroke('#000000');
     
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica-Bold')
-       .text('DATE', 30, paymentTableY + 8)
-       .text('TIME', 80, paymentTableY + 8)
-       .text('AMOUNT', 150, paymentTableY + 8)
-       .text('PAYMENT METHOD', 220, paymentTableY + 8)
-       .text('TRANSACTION ID', 350, paymentTableY + 8)
-       .text('STATUS', 480, paymentTableY + 8);
+       .text('DATE & TIME', 30, paymentTableY + 8)
+       .text('TYPE', 140, paymentTableY + 8)
+       .text('DESCRIPTION', 200, paymentTableY + 8)
+       .text('AMOUNT', 350, paymentTableY + 8)
+       .text('METHOD', 480, paymentTableY + 8);
     
     let paymentRowY = paymentTableY + 25;
     
@@ -1138,27 +1229,21 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
           const paymentDate = new Date(payment.createdAt).toLocaleDateString('en-GB');
           const paymentTime = new Date(payment.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true });
           const paymentMethod = payment.paymentMethod || 'Cash';
-          const transactionId = payment.transactionId || `TXN-${index + 1}`;
-          const status = payment.status === 'completed' ? 'Completed' : 'Pending';
           
-          // Payment history row
+          // Transaction row
           doc.rect(20, paymentRowY, 550, 20).stroke('#000000');
           
           doc.fillColor('#000000')
              .fontSize(9)
              .font('Helvetica')
-             .text(paymentDate, 30, paymentRowY + 6)
-             .text(paymentTime, 80, paymentRowY + 6)
-             .text(`₹${payment.amount.toFixed(2)}`, 150, paymentRowY + 6)
-             .text(paymentMethod, 220, paymentRowY + 6, { width: 120, ellipsis: true })
-             .text(transactionId, 350, paymentRowY + 6, { width: 120, ellipsis: true });
+             .text(`${paymentDate} ${paymentTime}`, 30, paymentRowY + 6)
+             .text('Payment', 140, paymentRowY + 6)
+             .text(payment.description || 'Lab Test Payment', 200, paymentRowY + 6, { width: 130, ellipsis: true })
+             .text(`+₹${payment.amount.toFixed(2)}`, 350, paymentRowY + 6);
           
-          // Status with color coding
-          if (status === 'Completed') {
-            doc.fillColor('#059669').text(status, 480, paymentRowY + 6);
-          } else {
-            doc.fillColor('#d97706').text(status, 480, paymentRowY + 6);
-          }
+          // Payment method
+          doc.fillColor('#000000')
+             .text(paymentMethod, 480, paymentRowY + 6, { width: 70, ellipsis: true });
           
           paymentRowY += 20;
         });

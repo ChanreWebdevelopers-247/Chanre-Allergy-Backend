@@ -253,3 +253,4 @@ This way:
 ---
 
 **Remember:** The system works perfectly with email-only. SMS is an optional enhancement! ✨
+

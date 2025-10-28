@@ -29,7 +29,7 @@ export const generateBillForTestRequest = async (req, res) => {
     }
     
     const { id } = req.params;
-    const { items = [], taxes = 0, discounts = 0, currency = 'INR', notes } = req.body;
+    const { items = [], taxes = 0, discounts = 0, currency = 'INR', notes, discountType, discountPercentage, discountAmount, discountReason } = req.body;
 
     // Validate ObjectId format
     if (!id || !id.match(/^[0-9a-fA-F]{24}$/)) {
@@ -180,7 +180,19 @@ export const generateBillForTestRequest = async (req, res) => {
     }));
     
     const subTotal = itemsWithTotals.reduce((sum, it) => sum + (it.total || 0), 0);
-    const totalAmount = Math.max(0, subTotal + Number(taxes || 0) - Number(discounts || 0));
+    
+    // Calculate discount based on type
+    let calculatedDiscount = 0;
+    if (discountType === 'percentage') {
+      calculatedDiscount = subTotal * (discountPercentage / 100);
+    } else if (discountType === 'amount') {
+      calculatedDiscount = discountAmount || 0;
+    } else {
+      // Fallback to old discounts value
+      calculatedDiscount = Number(discounts || 0);
+    }
+    
+    const totalAmount = Math.max(0, subTotal + Number(taxes || 0) - calculatedDiscount);
     
     // Generate a simple invoice number
     const prefix = testRequest.centerCode || testRequest.centerId?.code || 'INV';
@@ -189,11 +201,16 @@ export const generateBillForTestRequest = async (req, res) => {
     // Update test request with billing information
     const billingData = {
       status: 'generated',
-      amount: totalAmount,
+      subTotal: subTotal, // Store subtotal before discount and tax
+      amount: totalAmount, // Store grand total after discount and tax
       currency,
       items: itemsWithTotals,
       taxes: Number(taxes || 0),
-      discounts: Number(discounts || 0),
+      discounts: calculatedDiscount, // Store calculated discount
+      discountType: discountType || 'amount',
+      discountPercentage: discountPercentage || 0,
+      discountAmount: discountAmount || 0,
+      discountReason: discountReason || '',
       invoiceNumber,
       generatedAt: new Date(),
       generatedBy: req.user.id || req.user._id,
@@ -261,7 +278,16 @@ export const generateBillForTestRequest = async (req, res) => {
 export const markBillPaidForTestRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const { paymentMethod, transactionId, verificationNotes } = req.body;
+    const { paymentMethod, transactionId, verificationNotes, paymentAmount } = req.body;
+
+    // Debug log to see what we're receiving
+    console.log('📥 Received payment data:', {
+      transactionId,
+      paymentMethod,
+      verificationNotes,
+      paymentAmount,
+      bodyKeys: Object.keys(req.body)
+    });
 
     // Handle uploaded receipt file
     let receiptFileName = null;
@@ -306,9 +332,9 @@ export const markBillPaidForTestRequest = async (req, res) => {
     }
 
     // Handle payment amount from request body (for partial payments)
-    const paymentAmount = parseFloat(req.body.paymentAmount) || testRequest.billing.amount;
+    const actualPaymentAmount = parseFloat(paymentAmount) || testRequest.billing.amount;
     const currentPaidAmount = testRequest.billing.paidAmount || 0;
-    const newPaidAmount = currentPaidAmount + paymentAmount;
+    const newPaidAmount = currentPaidAmount + actualPaymentAmount;
     const totalAmount = testRequest.billing.amount;
     
     // Normalize payment method to match PaymentLog enum values
@@ -323,16 +349,13 @@ export const markBillPaidForTestRequest = async (req, res) => {
     
     const normalizedPaymentMethod = paymentMethodMapping[paymentMethod] || 'cash';
     
-    // Generate proper transaction ID if not provided or if it's the payment method
-    const properTransactionId = transactionId && 
-                                transactionId !== 'cash' && 
-                                transactionId !== 'Cash' && 
-                                transactionId !== 'card' && 
-                                transactionId !== 'Card' && 
-                                transactionId !== 'upi' && 
-                                transactionId !== 'UPI' 
+    // Use transaction ID from request if provided, otherwise auto-generate
+    // Only use entered transaction ID if it exists and is not empty
+    const properTransactionId = transactionId && transactionId.trim() 
                                 ? transactionId 
                                 : `PAY-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+    
+    console.log('🔑 Using transaction ID:', properTransactionId, 'from entered:', transactionId);
     
     // Update payment information
     testRequest.billing.paidAmount = newPaidAmount;
@@ -379,7 +402,7 @@ export const markBillPaidForTestRequest = async (req, res) => {
       });
 
       const paymentData = {
-        amount: paymentAmount,
+        amount: actualPaymentAmount,
         paymentMethod: normalizedPaymentMethod,
         transactionId: properTransactionId,
         receiptFile: receiptFileName,
@@ -3628,7 +3651,10 @@ export const createComprehensiveInvoice = async (req, res) => {
       serviceCharges, 
       notes, 
       taxPercentage, 
+      discountType,
       discountPercentage,
+      discountAmount,
+      discountReason,
       isReassignedEntry,
       reassignedEntryId
     } = req.body;
@@ -3674,6 +3700,11 @@ export const createComprehensiveInvoice = async (req, res) => {
         paymentMethod: 'pending',
         status: 'pending',
         invoiceNumber: invoiceNumber,
+        // Store discount information
+        discountType: discountType || 'percentage',
+        discountPercentage: discountPercentage || 0,
+        discountAmount: discountAmount || 0,
+        discountReason: discountReason || '',
         createdAt: new Date()
       };
       
@@ -3727,6 +3758,11 @@ export const createComprehensiveInvoice = async (req, res) => {
         status: 'pending',
         invoiceNumber: invoiceNumber,
         consultationType: 'OP', // Default to OP, can be changed to IP
+        // Store discount information
+        discountType: discountType || 'percentage',
+        discountPercentage: discountPercentage || 0,
+        discountAmount: discountAmount || 0,
+        discountReason: discountReason || '',
         createdAt: new Date()
       };
       
@@ -3759,6 +3795,11 @@ export const createComprehensiveInvoice = async (req, res) => {
             status: 'pending',
             invoiceNumber: invoiceNumber,
             serviceDetails: service.description || '',
+            // Store discount information
+            discountType: discountType || 'percentage',
+            discountPercentage: discountPercentage || 0,
+            discountAmount: discountAmount || 0,
+            discountReason: discountReason || '',
             createdAt: new Date()
           };
           
@@ -3778,8 +3819,16 @@ export const createComprehensiveInvoice = async (req, res) => {
     const subtotal = registrationFee + consultationFee + 
       serviceCharges.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
     const taxAmount = subtotal * (taxPercentage / 100);
-    const discountAmount = subtotal * (discountPercentage / 100);
-    const total = subtotal + taxAmount - discountAmount;
+    
+    // Calculate discount based on type
+    let calculatedDiscountAmount = 0;
+    if (discountType === 'percentage') {
+      calculatedDiscountAmount = subtotal * (discountPercentage / 100);
+    } else if (discountType === 'amount') {
+      calculatedDiscountAmount = discountAmount || 0;
+    }
+    
+    const total = subtotal + taxAmount - calculatedDiscountAmount;
 
     // Save patient
     await patient.save();
@@ -3801,9 +3850,11 @@ export const createComprehensiveInvoice = async (req, res) => {
       totals: {
         subtotal,
         tax: taxAmount,
-        discount: discountAmount,
+        discount: calculatedDiscountAmount,
         total
       },
+      discountType: discountType || 'percentage',
+      discountReason: discountReason || '',
       notes: notes || '',
       center: {
         name: req.user.center?.name || 'Medical Center'

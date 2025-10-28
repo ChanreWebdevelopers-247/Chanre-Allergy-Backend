@@ -7,7 +7,9 @@ import {
   getCenterById,
   getCenterWithAdmin,
   getCenterStats,
-  getCenterByAdminId
+  getCenterByAdminId,
+  updateCenterFees,
+  getCenterFees
 } from '../controllers/centerController.js';
 
 import { protect } from '../middleware/authMiddleware.js';
@@ -18,6 +20,8 @@ const router = express.Router();
 router.get('/withadmin/:id', protect, getCenterWithAdmin);
 router.get('/by-admin/:adminId', protect, getCenterByAdminId);
 router.get('/:id/stats', protect, getCenterStats);
+router.get('/:id/fees', protect, getCenterFees);
+router.put('/:id/fees', protect, updateCenterFees);
 
 router.post('/create-with-admin', createCenterWithAdmin);
 router.get('/', protect, getAllCenters);
