@@ -718,7 +718,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
     try {
       paymentLogs = await PaymentLog.find(paymentQuery)
         .populate('patientId', 'name uhId')
-        .populate('doctorId', 'name')
+        .populate('processedBy', 'name')
         .sort({ createdAt: -1 });
     } catch (paymentError) {
       console.error('Error fetching payment logs:', paymentError);
@@ -733,14 +733,14 @@ export const getAllBillsAndTransactions = async (req, res) => {
       patientId: log.patientId?._id,
       patientName: log.patientId?.name || 'N/A',
       uhId: log.patientId?.uhId || 'N/A',
-      transactionType: log.action || 'payment',
+      transactionType: log.paymentType || 'payment',
       description: log.description || 'Payment',
       amount: log.amount || 0,
       paymentMethod: log.paymentMethod,
       date: log.createdAt,
-      doctor: log.doctorId?.name || 'N/A',
+      doctor: log.processedBy?.name || 'N/A',
       invoiceNumber: log.invoiceNumber,
-      status: 'completed'
+      status: log.status || 'completed'
     }));
 
     // Combine all bills (already complete invoice structures)

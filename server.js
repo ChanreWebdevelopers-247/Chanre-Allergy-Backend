@@ -46,6 +46,7 @@ import consultationTransactionRoutes from './routes/consultationTransactionRoute
 import reassignmentTransactionRoutes from './routes/reassignmentTransactionRoutes.js';
 import unifiedTransactionRoutes from './routes/unifiedTransactionRoutes.js';
 import manualTransactionRoutes from './routes/manualTransactionRoutes.js';
+import doctorCalendarRoutes from './routes/doctorCalendarRoutes.js';
 
 
 dotenv.config();
@@ -171,6 +172,7 @@ app.use('/api/consultation-transactions', consultationTransactionRoutes);
 app.use('/api/reassignment-transactions', reassignmentTransactionRoutes);
 app.use('/api/transactions', unifiedTransactionRoutes);
 app.use('/api/manual-transactions', manualTransactionRoutes);
+app.use('/api/doctor-calendar', doctorCalendarRoutes);
 
 
 // Database connection check middleware (only for API routes that need database)
