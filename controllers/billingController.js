@@ -4722,4 +4722,200 @@ export const processTestRequestRefund = async (req, res) => {
   }
 };
 
+// Update paid bill and process refund (Center Admin action)
+export const updatePaidBill = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { items, taxes, discounts, notes, refundAmount, newAmount, originalAmount } = req.body;
+
+    // Validate required fields
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Items array is required and must not be empty'
+      });
+    }
+
+    if (!refundAmount || refundAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid refund amount is required'
+      });
+    }
+
+    // Validate ObjectId format
+    if (!id || !id.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid test request ID format'
+      });
+    }
+
+    // Find test request
+    const testRequest = await TestRequest.findById(id).select('patientName centerId centerName centerCode _id status billing patientId');
+
+    if (!testRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test request not found'
+      });
+    }
+
+    // Check if billing exists and is paid
+    if (!testRequest.billing) {
+      return res.status(400).json({
+        success: false,
+        message: 'No billing information found for this test request'
+      });
+    }
+
+    const isPaid = testRequest.billing.status === 'paid' || 
+                   testRequest.billing.status === 'verified' ||
+                   testRequest.status === 'Report_Sent' ||
+                   testRequest.status === 'Completed';
+
+    if (!isPaid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Bill must be paid before it can be edited',
+        currentStatus: testRequest.billing.status
+      });
+    }
+
+    // Validate refund amount doesn't exceed paid amount
+    const paidAmount = testRequest.billing.paidAmount || 0;
+    if (refundAmount > paidAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Refund amount (${refundAmount}) cannot exceed paid amount (${paidAmount})`
+      });
+    }
+
+    // Calculate new subtotal from items
+    const newSubTotal = items.reduce((sum, item) => {
+      return sum + (Number(item.quantity || 1) * Number(item.unitPrice || 0));
+    }, 0);
+
+    const newTaxes = Number(taxes || 0);
+    const newDiscounts = Number(discounts || 0);
+    const calculatedNewAmount = newSubTotal + newTaxes - newDiscounts;
+
+    // Validate new amount is less than original
+    if (calculatedNewAmount >= originalAmount) {
+      return res.status(400).json({
+        success: false,
+        message: 'New bill amount must be less than original amount to generate refund'
+      });
+    }
+
+    // Update billing information
+    testRequest.billing.items = items;
+    testRequest.billing.taxes = newTaxes;
+    testRequest.billing.discounts = newDiscounts;
+    testRequest.billing.amount = calculatedNewAmount;
+    testRequest.billing.notes = notes || testRequest.billing.notes || '';
+    
+    // Mark as refunded
+    testRequest.billing.status = 'refunded';
+    testRequest.billing.refundedAt = new Date();
+    testRequest.billing.refundedBy = req.user?.id || req.user?._id || 'system';
+    testRequest.billing.refundAmount = refundAmount;
+    testRequest.billing.refundReason = notes || 'Bill edited - items removed';
+    testRequest.billing.refundMethod = 'bill_edit';
+    testRequest.billing.refundNotes = `Bill edited: Original amount ${originalAmount}, New amount ${calculatedNewAmount}, Refund ${refundAmount}`;
+    
+    // Update paid amount (subtract refund)
+    testRequest.billing.paidAmount = Math.max(0, paidAmount - refundAmount);
+    
+    // Update last updated timestamp
+    testRequest.billing.updatedAt = new Date();
+    testRequest.billing.updatedBy = req.user?.id || req.user?._id || 'system';
+
+    // Save updated test request
+    const updated = await testRequest.save();
+
+    // Log refund transaction
+    try {
+      const metadata = {
+        ipAddress: req.ip || req.connection?.remoteAddress || 'unknown',
+        userAgent: req.headers?.['user-agent'] || 'unknown',
+        source: 'web',
+        externalRefundId: `REF-${Date.now()}-${testRequest._id.toString().slice(-6)}`,
+        billEdit: true,
+        originalAmount,
+        newAmount: calculatedNewAmount,
+        itemsRemoved: true
+      };
+
+      await logPatientBillingRefund(
+        testRequest._id,
+        refundAmount,
+        'bill_edit',
+        'Bill edited - items removed',
+        req.user?.id || req.user?._id || 'system',
+        metadata
+      );
+    } catch (paymentLogError) {
+      console.error('❌ Error logging refund transaction:', paymentLogError);
+      // Continue execution - payment logging failure should not stop the transaction
+    }
+
+    // Update transaction records if they exist
+    try {
+      const ReceiptTransaction = (await import('../models/ReceiptTransaction.js')).default;
+      const transaction = await ReceiptTransaction.findOne({ 
+        testRequestId: testRequest._id 
+      }).sort({ createdAt: -1 });
+      
+      if (transaction) {
+        const refundData = {
+          amount: refundAmount,
+          refundMethod: 'bill_edit',
+          refundReason: 'Bill edited - items removed',
+          refundedAt: new Date(),
+          refundType: 'partial',
+          refundedBy: req.user?.id || req.user?._id || 'system',
+          externalRefundId: `REF-${Date.now()}-${testRequest._id.toString().slice(-6)}`
+        };
+        
+        await transaction.addRefund(refundData);
+      }
+    } catch (transactionError) {
+      console.error('❌ Error updating transaction record with refund:', transactionError);
+      // Continue execution
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Bill updated and refund processed successfully',
+      testRequest: {
+        _id: updated._id,
+        status: updated.status,
+        billing: {
+          status: updated.billing.status,
+          amount: updated.billing.amount,
+          paidAmount: updated.billing.paidAmount,
+          refundAmount: updated.billing.refundAmount,
+          items: updated.billing.items,
+          taxes: updated.billing.taxes,
+          discounts: updated.billing.discounts
+        }
+      },
+      refundAmount,
+      originalAmount,
+      newAmount: calculatedNewAmount
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating paid bill:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update bill and process refund',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+};
+
 

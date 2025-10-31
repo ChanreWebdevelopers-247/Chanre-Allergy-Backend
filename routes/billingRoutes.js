@@ -28,7 +28,8 @@ import {
   processPayment,
   cancelBillWithReason,
   processRefund,
-  processTestRequestRefund
+  processTestRequestRefund,
+  updatePaidBill
 } from '../controllers/billingController.js';
 import { generateInvoicePDF, generateConsultationInvoicePDF, generateReassignmentInvoicePDF } from '../controllers/invoiceController.js';
 
@@ -86,6 +87,9 @@ router.put('/test-requests/:id/update-bill', ensureCenterIsolation, updateBillDe
 
 // Update payment status (Center Admin action)
 router.put('/test-requests/:id/update-payment', ensureCenterIsolation, updatePaymentStatus);
+
+// Update paid bill and process refund (Center Admin action)
+router.put('/test-requests/:id/update-paid-bill', ensureCenterIsolation, updatePaidBill);
 
 // Get billing information for a test request
 router.get('/test-requests/:id/billing', ensureCenterIsolation, getBillingInfo);

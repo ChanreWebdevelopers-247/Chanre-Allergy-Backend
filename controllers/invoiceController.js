@@ -70,7 +70,7 @@ export const generateInvoicePDF = async (req, res) => {
     const testRequest = await TestRequest.findById(testRequestId)
       .populate('patientId', 'name phone address age gender')
       .populate('doctorId', 'name specializations email phone')
-      .populate('centerId', 'name code phone fax website missCallNumber mobileNumber');
+      .populate('centerId', 'name code address phone fax website missCallNumber mobileNumber');
     
     if (!testRequest) {
       return res.status(404).json({ message: 'Test request not found' });
@@ -106,9 +106,9 @@ export const generateInvoicePDF = async (req, res) => {
        .font('Helvetica')
        .text('Invoice', 20, 20);
     
-    // Hospital Information (Left)
-    const hospitalName = testRequest.centerId?.name || 'Chanre Hospital';
-    const hospitalAddress = testRequest.centerId?.address || 'Rajajinagar, Bengaluru';
+    // Hospital Information (Left) - Use centerId data first, then fallback to testRequest fields, then defaults
+    const hospitalName = testRequest.centerId?.name || testRequest.centerName || 'Chanre Hospital';
+    const hospitalAddress = testRequest.centerId?.address || testRequest.centerId?.location || 'Rajajinagar, Bengaluru';
     const hospitalPhone = testRequest.centerId?.phone || '08040810611';
     const hospitalFax = testRequest.centerId?.fax || '080-42516600';
     const hospitalWebsite = testRequest.centerId?.website || 'www.chanreallergy.com';
@@ -241,29 +241,43 @@ export const generateInvoicePDF = async (req, res) => {
         const status = testRequest.billing.status === 'paid' || testRequest.billing.status === 'payment_received' ? 'Paid' : 
                       testRequest.billing.status === 'refunded' ? 'Refunded' : 'Pending';
         
-        // Service row
-        doc.rect(20, currentRowY, 550, 20).stroke('#000000');
+        // Calculate text height for service name (allow wrapping, max 3 lines)
+        const serviceName = item.name || 'Lab Test';
+        const maxNameWidth = 120;
+        const lineHeight = 12;
+        
+        // Calculate how many lines the service name will take
+        doc.fontSize(9).font('Helvetica');
+        const textHeight = doc.heightOfString(serviceName, { width: maxNameWidth });
+        const numLines = Math.ceil(textHeight / lineHeight);
+        const rowHeight = Math.max(20, (numLines * lineHeight) + 8); // Minimum 20, add padding
+        
+        // Service row with dynamic height
+        doc.rect(20, currentRowY, 550, rowHeight).stroke('#000000');
+        
+        // Vertical center position for other columns
+        const textY = currentRowY + (rowHeight / 2) - 4;
         
         doc.fillColor('#000000')
            .fontSize(9)
            .font('Helvetica')
-           .text((index + 1).toString(), 30, currentRowY + 6)
-           .text(item.name || 'Lab Test', 70, currentRowY + 6, { width: 120, ellipsis: true })
-           .text((item.quantity || 1).toString(), 200, currentRowY + 6)
-           .text(`₹${itemTotal.toFixed(2)}`, 250, currentRowY + 6)
-           .text(`₹${itemPaidAmount.toFixed(2)}`, 350, currentRowY + 6)
-           .text(`₹${itemBalance.toFixed(2)}`, 420, currentRowY + 6);
+           .text((index + 1).toString(), 30, textY)
+           .text(serviceName, 70, currentRowY + 6, { width: maxNameWidth, lineGap: 2 }) // Allow wrapping
+           .text((item.quantity || 1).toString(), 200, textY)
+           .text(`₹${itemTotal.toFixed(2)}`, 250, textY)
+           .text(`₹${itemPaidAmount.toFixed(2)}`, 350, textY)
+           .text(`₹${itemBalance.toFixed(2)}`, 420, textY);
         
         // Status with color coding
         if (status === 'Paid') {
-          doc.fillColor('#059669').text(status, 480, currentRowY + 6);
+          doc.fillColor('#059669').text(status, 480, textY);
         } else if (status === 'Pending') {
-          doc.fillColor('#d97706').text(status, 480, currentRowY + 6);
+          doc.fillColor('#d97706').text(status, 480, textY);
         } else {
-          doc.fillColor('#dc2626').text(status, 480, currentRowY + 6);
+          doc.fillColor('#dc2626').text(status, 480, textY);
         }
         
-        currentRowY += 20;
+        currentRowY += rowHeight;
       });
     } else {
       // Single service
@@ -272,27 +286,39 @@ export const generateInvoicePDF = async (req, res) => {
       const status = testRequest.billing.status === 'paid' || testRequest.billing.status === 'payment_received' ? 'Paid' : 
                     testRequest.billing.status === 'refunded' ? 'Refunded' : 'Pending';
       
-      doc.rect(20, currentRowY, 550, 20).stroke('#000000');
+      // Calculate text height for test type (allow wrapping)
+      const testTypeName = testRequest.testType || 'Lab Test';
+      const maxNameWidth = 120;
+      const lineHeight = 12;
+      
+      doc.fontSize(9).font('Helvetica');
+      const textHeight = doc.heightOfString(testTypeName, { width: maxNameWidth });
+      const numLines = Math.ceil(textHeight / lineHeight);
+      const rowHeight = Math.max(20, (numLines * lineHeight) + 8);
+      
+      doc.rect(20, currentRowY, 550, rowHeight).stroke('#000000');
+      
+      const textY = currentRowY + (rowHeight / 2) - 4;
       
       doc.fillColor('#000000')
          .fontSize(9)
          .font('Helvetica')
-         .text('1', 30, currentRowY + 6)
-         .text(testRequest.testType || 'Lab Test', 70, currentRowY + 6, { width: 120, ellipsis: true })
-         .text('1', 200, currentRowY + 6)
-         .text(`₹${totalAmount.toFixed(2)}`, 250, currentRowY + 6)
-         .text(`₹${paidAmount.toFixed(2)}`, 350, currentRowY + 6)
-         .text(`₹${balance.toFixed(2)}`, 420, currentRowY + 6);
+         .text('1', 30, textY)
+         .text(testTypeName, 70, currentRowY + 6, { width: maxNameWidth, lineGap: 2 })
+         .text('1', 200, textY)
+         .text(`₹${totalAmount.toFixed(2)}`, 250, textY)
+         .text(`₹${paidAmount.toFixed(2)}`, 350, textY)
+         .text(`₹${balance.toFixed(2)}`, 420, textY);
       
       if (status === 'Paid') {
-        doc.fillColor('#059669').text(status, 480, currentRowY + 6);
+        doc.fillColor('#059669').text(status, 480, textY);
       } else if (status === 'Pending') {
-        doc.fillColor('#d97706').text(status, 480, currentRowY + 6);
+        doc.fillColor('#d97706').text(status, 480, textY);
       } else {
-        doc.fillColor('#dc2626').text(status, 480, currentRowY + 6);
+        doc.fillColor('#dc2626').text(status, 480, textY);
       }
       
-      currentRowY += 20;
+      currentRowY += rowHeight;
     }
     
     // ===== BILL SUMMARY SECTIONS =====
@@ -417,7 +443,8 @@ export const generateInvoicePDF = async (req, res) => {
     }
     
     // ===== TRANSACTION HISTORY SECTION =====
-    const transactionHistoryY = summaryY + 70;
+    // Add more margin at the top (increased from 70 to 100)
+    const transactionHistoryY = summaryY + 100;
     
     doc.fillColor('#000000')
        .fontSize(11)
@@ -443,11 +470,23 @@ export const generateInvoicePDF = async (req, res) => {
     const PaymentLog = (await import('../models/PaymentLog.js')).default;
     
     try {
-      // Fetch payment logs ONLY for this specific test request (no fallback to patient payments)
-      const paymentLogs = await PaymentLog.find({ 
-        testRequestId: testRequestId,
-        status: { $in: ['completed', 'refunded'] }
-      }).sort({ createdAt: -1 });
+      // Fetch payment logs for this test request - include all statuses
+      // Also check by invoiceNumber in case testRequestId doesn't match
+      const invoiceNumber = testRequest.billing?.invoiceNumber;
+      const mongoose = (await import('mongoose')).default;
+      
+      // Build query to find payment logs - try both testRequestId and invoiceNumber
+      const query = {
+        $or: [
+          { testRequestId: new mongoose.Types.ObjectId(testRequestId) },
+          ...(invoiceNumber ? [{ invoiceNumber: invoiceNumber }] : [])
+        ],
+        status: { $in: ['completed', 'refunded', 'cancelled'] }
+      };
+      
+      const paymentLogs = await PaymentLog.find(query).sort({ createdAt: -1 });
+      
+      console.log(`📋 Found ${paymentLogs.length} payment log(s) for test request ${testRequestId}, invoice ${invoiceNumber || 'N/A'}`);
       
       if (paymentLogs.length > 0) {
         // Show individual payment transactions
@@ -460,7 +499,13 @@ export const generateInvoicePDF = async (req, res) => {
           doc.rect(20, paymentRowY, 550, 20).stroke('#000000');
           
           const isRefund = payment.status === 'refunded';
-          const transactionType = isRefund ? 'Refund' : 'Payment';
+          const isCancelled = payment.status === 'cancelled';
+          let transactionType = 'Payment';
+          if (isRefund) {
+            transactionType = 'Refund';
+          } else if (isCancelled) {
+            transactionType = 'Cancelled';
+          }
           
           doc.fillColor('#000000')
              .fontSize(9)
@@ -477,10 +522,24 @@ export const generateInvoicePDF = async (req, res) => {
             else if (payment.paymentType === 'lab_test' || payment.paymentType === 'test') description = 'Lab Test';
           }
           
+          // Add status info to description for cancelled/refunded
+          if (isCancelled) {
+            description = `Cancelled: ${description}`;
+          } else if (isRefund) {
+            description = `Refund: ${description}`;
+          }
+          
           doc.text(description, 200, paymentRowY + 6, { width: 130, ellipsis: true });
           
-          // Show amount with appropriate sign
-          const amountSign = isRefund ? '-' : '+';
+          // Show amount with appropriate sign and color
+          const amountSign = (isRefund || isCancelled) ? '-' : '+';
+          if (isCancelled) {
+            doc.fillColor('#dc2626'); // Red for cancelled
+          } else if (isRefund) {
+            doc.fillColor('#d97706'); // Orange for refund
+          } else {
+            doc.fillColor('#000000'); // Black for payment
+          }
           doc.text(`${amountSign}₹${payment.amount.toFixed(2)}`, 350, paymentRowY + 6);
           
           // Payment method

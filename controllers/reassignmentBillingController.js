@@ -73,18 +73,27 @@ class ReassignmentBillingController {
       // Check if patient is eligible for free reassignment (within 7 days)
       const isEligibleForFreeReassignment = ReassignmentBillingController.isEligibleForFreeReassignment(patient);
       
-      // Calculate consultation fee based on eligibility
+      console.log('🔍 Frontend data received:', {
+        consultationFee,
+        consultationType,
+        serviceCharges,
+        serviceChargesLength: serviceCharges?.length
+      });
+      
+      // Use the consultation fee from the frontend directly
+      // The frontend already determines the correct fee based on eligibility
       let finalConsultationFee = consultationFee;
-      if (isEligibleForFreeReassignment) {
-        finalConsultationFee = 0; // Free for first reassignment within 7 days
-      } else if (consultationType === 'IP') {
-        finalConsultationFee = 1050;
-      }
 
       // Calculate service charges total
       const serviceTotal = serviceCharges.reduce((sum, service) => 
         sum + (parseFloat(service.amount) || 0), 0
       );
+      
+      console.log('🔍 Calculated totals:', {
+        finalConsultationFee,
+        serviceTotal,
+        subtotal: finalConsultationFee + serviceTotal
+      });
 
       // Calculate totals
       const subtotal = finalConsultationFee + serviceTotal;
