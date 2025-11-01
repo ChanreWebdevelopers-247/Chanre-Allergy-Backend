@@ -322,22 +322,124 @@ class ReassignmentBillingController {
       }
 
       // If appointment time is provided, schedule appointment
+      console.log('📅 Appointment time received:', appointmentTime);
       if (appointmentTime) {
         if (!patient.appointments) {
           patient.appointments = [];
+          console.log('✅ Initialized appointments array');
         }
         
-        patient.appointments.push({
-          doctorId: latestBill.doctorId,
-          scheduledAt: new Date(appointmentTime),
-          type: 'reassignment_consultation',
-          status: 'scheduled',
-          notes: `Appointment scheduled after payment for reassignment consultation`,
-          createdAt: new Date()
+        console.log('📅 Creating appointment for reassigned patient:', patient.name);
+        console.log('📅 Raw appointment time received:', appointmentTime);
+        
+        // Parse the datetime-local string correctly
+        // datetime-local sends format: "YYYY-MM-DDTHH:mm" (no timezone, interpreted as local time)
+        // We need to parse it as local time, not UTC
+        let appointmentDate;
+        if (typeof appointmentTime === 'string' && appointmentTime.includes('T')) {
+          // Parse as local time (datetime-local format)
+          const [datePart, timePart] = appointmentTime.split('T');
+          const [year, month, day] = datePart.split('-').map(Number);
+          const [hours, minutes] = timePart.split(':').map(Number);
+          
+          // Create date in local timezone
+          appointmentDate = new Date(year, month - 1, day, hours, minutes, 0);
+          console.log('📅 Parsed as local time:', {
+            input: appointmentTime,
+            year, month: month - 1, day, hours, minutes,
+            localDate: appointmentDate.toString(),
+            localISO: appointmentDate.toISOString()
+          });
+        } else {
+          // Fallback to standard Date parsing
+          appointmentDate = new Date(appointmentTime);
+          console.log('📅 Parsed using standard Date constructor:', appointmentDate.toString());
+        }
+        
+        // Extract date and time components using local timezone methods
+        const year = appointmentDate.getFullYear();
+        const month = String(appointmentDate.getMonth() + 1).padStart(2, '0');
+        const day = String(appointmentDate.getDate()).padStart(2, '0');
+        const formattedDate = `${year}-${month}-${day}`; // YYYY-MM-DD format in local timezone
+        
+        const hours = appointmentDate.getHours(); // Local hours
+        const minutes = appointmentDate.getMinutes(); // Local minutes
+        const formattedTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+        
+        // Format time in 12-hour format for display
+        const hours12 = hours % 12 || 12;
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        const formattedTime12 = `${String(hours12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${ampm}`;
+        
+        console.log('📅 Formatted appointment details:', {
+          formattedDate,
+          formattedTime,
+          formattedTime12,
+          hours,
+          minutes,
+          hours12,
+          ampm
         });
+        
+        // Create appointment object with all fields frontend expects
+        const appointmentObj = {
+          doctorId: latestBill.doctorId,
+          scheduledAt: appointmentDate,
+          appointmentTime: appointmentDate.toISOString(), // ISO string for compatibility
+          preferredDate: formattedDate,
+          preferredTime: formattedTime12, // Use 12-hour format for display
+          confirmedDate: formattedDate,
+          confirmedTime: formattedTime12,
+          appointmentType: 'reassignment_consultation',
+          type: 'reassignment_consultation', // For compatibility with different checks
+          status: 'scheduled',
+          appointmentStatus: 'scheduled', // For compatibility
+          notes: `Appointment scheduled after payment for reassignment consultation`,
+          createdAt: new Date(),
+          confirmedAt: new Date(),
+          // Store additional fields for reference
+          reassignmentAppointment: true,
+          invoiceNumber: latestBill.invoiceNumber
+        };
+        
+        patient.appointments.push(appointmentObj);
+        console.log('✅ Appointment object created and pushed to array:', {
+          doctorId: appointmentObj.doctorId,
+          scheduledAt: appointmentObj.scheduledAt,
+          preferredDate: appointmentObj.preferredDate,
+          preferredTime: appointmentObj.preferredTime,
+          status: appointmentObj.status,
+          reassignmentAppointment: appointmentObj.reassignmentAppointment,
+          invoiceNumber: appointmentObj.invoiceNumber
+        });
+        console.log('📋 Current appointments array length:', patient.appointments.length);
+        
+        // Also store appointmentTime in billing record's customData for reference
+        if (!latestBill.customData) {
+          latestBill.customData = {};
+        }
+        if (!latestBill.customData.totals) {
+          latestBill.customData.totals = {};
+        }
+        latestBill.customData.appointmentTime = appointmentTime;
+        latestBill.customData.appointmentDate = formattedDate;
+        latestBill.customData.appointmentTimeFormatted = formattedTime12;
       }
 
       await patient.save();
+      
+      // Reload patient from database to ensure we have the latest appointments array
+      const updatedPatient = await Patient.findById(patientId);
+      console.log('✅ Patient saved. Appointments array length:', updatedPatient?.appointments?.length || 0);
+      if (updatedPatient?.appointments?.length > 0) {
+        console.log('📅 Latest appointment:', {
+          scheduledAt: updatedPatient.appointments[updatedPatient.appointments.length - 1].scheduledAt,
+          preferredDate: updatedPatient.appointments[updatedPatient.appointments.length - 1].preferredDate,
+          preferredTime: updatedPatient.appointments[updatedPatient.appointments.length - 1].preferredTime,
+          status: updatedPatient.appointments[updatedPatient.appointments.length - 1].status,
+          reassignmentAppointment: updatedPatient.appointments[updatedPatient.appointments.length - 1].reassignmentAppointment
+        });
+      }
 
       // Log payment transaction for reassignment billing
       try {
@@ -432,12 +534,20 @@ class ReassignmentBillingController {
         appointmentScheduled: !!appointmentTime
       });
 
+      // Reload patient one more time to get the absolute latest data including appointments
+      const finalPatient = await Patient.findById(patientId);
+      
       res.status(200).json({
         success: true,
         message: 'Payment processed successfully',
         payment: paymentRecord,
         updatedBill: latestBill,
-        appointmentScheduled: !!appointmentTime
+        appointmentScheduled: !!appointmentTime,
+        patient: {
+          _id: finalPatient._id,
+          appointments: finalPatient.appointments || [],
+          appointmentsCount: finalPatient.appointments?.length || 0
+        }
       });
 
     } catch (error) {

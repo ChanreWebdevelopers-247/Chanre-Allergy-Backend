@@ -126,6 +126,27 @@ const revisitHistorySchema = new mongoose.Schema({
   recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
+const appointmentSchema = new mongoose.Schema({
+  doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  scheduledAt: { type: Date },
+  appointmentTime: { type: String }, // ISO string for compatibility
+  preferredDate: { type: String }, // YYYY-MM-DD format
+  preferredTime: { type: String }, // 12-hour format (e.g., "04:30 PM")
+  confirmedDate: { type: String }, // YYYY-MM-DD format
+  confirmedTime: { type: String }, // 12-hour format (e.g., "04:30 PM")
+  appointmentType: { type: String },
+  type: { type: String }, // For compatibility
+  status: { type: String, default: 'scheduled' },
+  appointmentStatus: { type: String, default: 'scheduled' }, // For compatibility
+  notes: { type: String },
+  createdAt: { type: Date, default: Date.now },
+  confirmedAt: { type: Date },
+  viewedAt: { type: Date },
+  viewedByDoctor: { type: Boolean, default: false },
+  reassignmentAppointment: { type: Boolean, default: false },
+  invoiceNumber: { type: String }
+}, { _id: true, strict: false }); // Allow additional fields for flexibility
+
 
 const patientSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -185,6 +206,7 @@ const patientSchema = new mongoose.Schema({
   // Online appointment integration
   appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatientAppointment' }, // Reference to online appointment
   fromAppointment: { type: Boolean, default: false }, // Whether patient was created from online appointment
+  appointments: [appointmentSchema], // Array of appointments (for reassigned patients and regular appointments)
   tests: [testSchema],
   history: [historySchema],
   medications: [medicationSchema],

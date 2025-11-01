@@ -213,6 +213,7 @@ const getPatients = async (req, res) => {
       .populate('centerId', 'name code')
       .populate('assignedDoctor', 'name specializations specialization')
       .populate('currentDoctor', 'name specializations specialization')
+      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode')
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .sort({ createdAt: -1 });
@@ -652,24 +653,129 @@ const getPatientsByDoctor = async (req, res) => {
       .populate('centerId', 'name code')
       .populate('assignedDoctor', 'name specializations specialization')
       .populate('currentDoctor', 'name specializations specialization')
-      .select('name age gender phone email address centerId assignedDoctor');
+      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode')
+      .select('name age gender phone email address centerId assignedDoctor appointmentId appointmentTime appointmentStatus fromAppointment assignedAt appointments isReassigned reassignmentHistory');
     
     // Manually populate assignedDoctor if it's still a string
     const User = (await import('../models/User.js')).default;
-    for (let patient of patients) {
+    const PatientAppointment = (await import('../models/PatientAppointment.js')).default;
+    
+    // Enrich each patient with appointments array
+    const patientsWithAppointments = await Promise.all(patients.map(async (patient) => {
+      const patientObj = patient.toObject();
+      
+      // Manually populate assignedDoctor if needed
       if (patient.assignedDoctor && typeof patient.assignedDoctor === 'string') {
         try {
           const doctor = await User.findById(patient.assignedDoctor).select('name specializations specialization');
           if (doctor) {
-            patient.assignedDoctor = doctor;
+            patientObj.assignedDoctor = doctor;
           }
         } catch (userError) {
           console.log('❌ Error finding doctor for patient:', patient._id, userError.message);
         }
       }
-    }
+      
+      // Fetch all appointments for this patient
+      const appointments = [];
+      
+      // Priority 1: Include appointments from patient.appointments array (embedded appointments)
+      // This is critical for reassigned patients who have appointments stored directly in the patient document
+      if (patient.appointments && Array.isArray(patient.appointments) && patient.appointments.length > 0) {
+        // Convert Mongoose subdocuments to plain objects
+        patient.appointments.forEach(apt => {
+          // Convert to plain object if it's a Mongoose subdocument
+          const aptObj = apt.toObject ? apt.toObject() : apt;
+          // Only add if it's not already in the array
+          const exists = appointments.some(existing => {
+            // Check by comparing multiple fields to avoid duplicates
+            if (aptObj._id && existing._id) {
+              return existing._id.toString() === aptObj._id.toString();
+            }
+            // Fallback: check by date and time
+            const aptDate = aptObj.confirmedDate || aptObj.preferredDate || aptObj.scheduledAt;
+            const existingDate = existing.confirmedDate || existing.preferredDate || existing.scheduledAt;
+            const aptTime = aptObj.confirmedTime || aptObj.preferredTime;
+            const existingTime = existing.confirmedTime || existing.preferredTime;
+            return aptDate === existingDate && aptTime === existingTime;
+          });
+          if (!exists) {
+            appointments.push(aptObj);
+          }
+        });
+        console.log(`✅ Found ${patient.appointments.length} embedded appointment(s) for patient ${patient.name}`);
+      }
+      
+      // Priority 2: If patient has appointmentId (singular), fetch that appointment from PatientAppointment collection
+      if (patient.appointmentId) {
+        try {
+          const appointment = await PatientAppointment.findById(patient.appointmentId);
+          if (appointment) {
+            // Check if it's already in the appointments array
+            const exists = appointments.some(existing => {
+              if (appointment._id && existing._id) {
+                return existing._id.toString() === appointment._id.toString();
+              }
+              return false;
+            });
+            if (!exists) {
+              appointments.push(appointment);
+            }
+          }
+        } catch (err) {
+          console.log('Error fetching appointment by ID:', err.message);
+        }
+      }
+      
+      // Priority 3: Also search for appointments by patient phone/email (for appointments that may not be linked via appointmentId)
+      if (patient.phone || patient.email) {
+        try {
+          const searchQuery = {};
+          if (patient.phone) {
+            searchQuery.patientPhone = patient.phone;
+          }
+          if (patient.email) {
+            searchQuery.$or = [
+              { patientEmail: patient.email },
+              { patientPhone: patient.phone }
+            ];
+          }
+          
+          const additionalAppointments = await PatientAppointment.find(searchQuery)
+            .sort({ preferredDate: -1 })
+            .limit(10); // Limit to recent appointments
+          
+          // Merge appointments, avoiding duplicates
+          additionalAppointments.forEach(apt => {
+            const exists = appointments.some(existing => {
+              if (apt._id && existing._id) {
+                return existing._id.toString() === apt._id.toString();
+              }
+              return false;
+            });
+            if (!exists) {
+              appointments.push(apt);
+            }
+          });
+        } catch (err) {
+          console.log('Error fetching appointments by phone/email:', err.message);
+        }
+      }
+      
+      // Sort appointments by date (most recent first)
+      appointments.sort((a, b) => {
+        const dateA = a.confirmedDate || a.preferredDate;
+        const dateB = b.confirmedDate || b.preferredDate;
+        return new Date(dateB) - new Date(dateA);
+      });
+      
+      // Attach appointments array to patient object
+      patientObj.appointments = appointments;
+      
+      return patientObj;
+    }));
     
-    res.json(patients);
+    res.json(patientsWithAppointments);
   } catch (err) {
     console.error('Get patients by doctor error:', err);
     res.status(500).json({ message: 'Failed to fetch patients by doctor', error: err.message });
@@ -896,19 +1002,155 @@ const markPatientAsViewed = async (req, res) => {
     }
 
     // Mark as viewed if not already viewed
+    let statusUpdated = false;
+    if (!patient.viewedByDoctor) {
+      patient.viewedByDoctor = true;
+      patient.viewedAt = new Date();
+      patient.appointmentStatus = 'viewed'; // Update appointment status for receptionist view
+      statusUpdated = true;
+      
+      console.log(`✅ Patient ${patient.name} marked as viewed by doctor ${req.user.name}`);
+    } else {
+      console.log(`ℹ️ Patient ${patient.name} was already marked as viewed`);
+    }
+    
+    // Update reassigned appointment status in appointments array if it exists
+    if (patient.appointments && Array.isArray(patient.appointments) && patient.appointments.length > 0) {
+      // Find the most recent reassigned appointment (for reassigned patients)
+      const isReassigned = patient.isReassigned || patient.reassignmentHistory?.length > 0;
+      
+      if (isReassigned) {
+        // Find reassigned appointments and update the most recent one
+        const reassignedAppointments = patient.appointments.filter(apt => 
+          apt.reassignmentAppointment || 
+          apt.appointmentType === 'reassignment_consultation' ||
+          apt.type === 'reassignment_consultation'
+        );
+        
+        if (reassignedAppointments.length > 0) {
+          // Sort by date (most recent first)
+          reassignedAppointments.sort((a, b) => {
+            const dateA = new Date(a.scheduledAt || a.appointmentTime || a.createdAt || 0);
+            const dateB = new Date(b.scheduledAt || b.appointmentTime || b.createdAt || 0);
+            return dateB.getTime() - dateA.getTime();
+          });
+          
+          // Update the most recent reassigned appointment
+          const latestReassignedAppointment = reassignedAppointments[0];
+          
+          // Find the appointment by matching unique fields (invoiceNumber or scheduledAt)
+          const appointmentIndex = patient.appointments.findIndex(apt => {
+            if (apt.reassignmentAppointment || apt.appointmentType === 'reassignment_consultation' || apt.type === 'reassignment_consultation') {
+              // Match by invoiceNumber if available, or by scheduledAt
+              if (latestReassignedAppointment.invoiceNumber && apt.invoiceNumber) {
+                return apt.invoiceNumber === latestReassignedAppointment.invoiceNumber;
+              }
+              const aptDate = new Date(apt.scheduledAt || apt.appointmentTime || apt.createdAt || 0);
+              const latestDate = new Date(latestReassignedAppointment.scheduledAt || latestReassignedAppointment.appointmentTime || latestReassignedAppointment.createdAt || 0);
+              return aptDate.getTime() === latestDate.getTime();
+            }
+            return false;
+          });
+          
+          if (appointmentIndex !== -1) {
+            patient.appointments[appointmentIndex].status = 'viewed';
+            patient.appointments[appointmentIndex].appointmentStatus = 'viewed';
+            patient.appointments[appointmentIndex].viewedAt = new Date();
+            patient.appointments[appointmentIndex].viewedByDoctor = true;
+            statusUpdated = true;
+            console.log(`✅ Updated reassigned appointment status to 'viewed' for patient ${patient.name}`);
+          }
+        }
+      } else {
+        // For regular patients, update the most recent appointment
+        const sortedAppointments = [...patient.appointments].sort((a, b) => {
+          const dateA = new Date(a.scheduledAt || a.appointmentTime || a.createdAt || 0);
+          const dateB = new Date(b.scheduledAt || b.appointmentTime || b.createdAt || 0);
+          return dateB.getTime() - dateA.getTime();
+        });
+        
+        if (sortedAppointments.length > 0) {
+          const latestAppointment = sortedAppointments[0];
+          
+          // Find the appointment by matching date
+          const appointmentIndex = patient.appointments.findIndex(apt => {
+            const aptDate = new Date(apt.scheduledAt || apt.appointmentTime || apt.createdAt || 0);
+            const latestDate = new Date(latestAppointment.scheduledAt || latestAppointment.appointmentTime || latestAppointment.createdAt || 0);
+            return aptDate.getTime() === latestDate.getTime();
+          });
+          
+          if (appointmentIndex !== -1 && latestAppointment.status !== 'viewed') {
+            patient.appointments[appointmentIndex].status = 'viewed';
+            patient.appointments[appointmentIndex].appointmentStatus = 'viewed';
+            patient.appointments[appointmentIndex].viewedAt = new Date();
+            patient.appointments[appointmentIndex].viewedByDoctor = true;
+            statusUpdated = true;
+            console.log(`✅ Updated appointment status to 'viewed' for patient ${patient.name}`);
+          }
+        }
+      }
+    }
+    
+    if (statusUpdated) {
+      await patient.save();
+    }
+
+    // Reload patient to ensure we have latest data including appointments
+    const updatedPatient = await Patient.findById(patientId)
+      .populate('assignedDoctor', 'name specializations specialization')
+      .populate('currentDoctor', 'name specializations specialization');
+    
+    res.json({ 
+      message: 'Patient marked as viewed',
+      patient: {
+        _id: updatedPatient._id,
+        name: updatedPatient.name,
+        viewedByDoctor: updatedPatient.viewedByDoctor,
+        viewedAt: updatedPatient.viewedAt,
+        appointmentStatus: updatedPatient.appointmentStatus,
+        appointments: updatedPatient.appointments || [],
+        isReassigned: updatedPatient.isReassigned,
+        reassignmentHistory: updatedPatient.reassignmentHistory || []
+      }
+    });
+  } catch (error) {
+    console.error('❌ Mark patient as viewed error:', error);
+    res.status(500).json({ message: 'Failed to mark patient as viewed' });
+  }
+};
+
+// Mark consultation as viewed by receptionist (for completed consultations)
+const markConsultationAsViewed = async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    
+    if (!patientId) {
+      return res.status(400).json({ message: 'Patient ID is required' });
+    }
+
+    const patient = await Patient.findById(patientId)
+      .populate('assignedDoctor', 'name')
+      .populate('currentDoctor', 'name');
+
+    if (!patient) {
+      return res.status(404).json({ message: 'Patient not found' });
+    }
+
+    // Mark as viewed if not already viewed
     if (!patient.viewedByDoctor) {
       patient.viewedByDoctor = true;
       patient.viewedAt = new Date();
       patient.appointmentStatus = 'viewed'; // Update appointment status for receptionist view
       await patient.save();
       
-      console.log(`✅ Patient ${patient.name} marked as viewed by doctor ${req.user.name}`);
+      console.log(`✅ Consultation marked as viewed by receptionist ${req.user.name} for patient ${patient.name}`);
     } else {
       console.log(`ℹ️ Patient ${patient.name} was already marked as viewed`);
     }
 
     res.json({ 
-      message: 'Patient marked as viewed',
+      success: true,
+      message: 'Consultation marked as viewed',
       patient: {
         _id: patient._id,
         name: patient.name,
@@ -918,8 +1160,8 @@ const markPatientAsViewed = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Mark patient as viewed error:', error);
-    res.status(500).json({ message: 'Failed to mark patient as viewed' });
+    console.error('❌ Mark consultation as viewed error:', error);
+    res.status(500).json({ message: 'Failed to mark consultation as viewed' });
   }
 };
 
@@ -1156,6 +1398,7 @@ export {
   addSampleData,
   testEndpoint,
   markPatientAsViewed,
+  markConsultationAsViewed,
   reassignDoctor,
   autoReassignUnviewedPatients,
   recordPatientRevisit,

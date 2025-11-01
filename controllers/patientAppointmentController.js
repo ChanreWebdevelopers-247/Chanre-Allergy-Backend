@@ -149,6 +149,19 @@ export const bookAppointment = asyncHandler(async (req, res) => {
       }));
     }
 
+    // Check if a patient already exists with this phone number
+    const Patient = (await import('../models/Patient.js')).default;
+    const existingPatient = await Patient.findOne({ 
+      phone: patientPhone,
+      centerId: centerId
+    });
+    
+    let patientId = null;
+    if (existingPatient) {
+      patientId = existingPatient._id;
+      console.log('Found existing patient with phone number:', patientPhone, 'Patient ID:', patientId);
+    }
+
     // Create appointment
     const appointment = await PatientAppointment.create({
       patientName,
@@ -172,8 +185,27 @@ export const bookAppointment = asyncHandler(async (req, res) => {
       preferredContactTime,
       notes,
       patientLocation,
-      medicalHistoryDocs
+      medicalHistoryDocs,
+      patientId: patientId // Link to existing patient if found
     });
+    
+    // If patient exists, update their appointmentId reference
+    if (existingPatient) {
+      try {
+        // Only update if they don't already have an appointmentId or if this is a newer appointment
+        const shouldUpdate = !existingPatient.appointmentId || 
+          (appointment.preferredDate > new Date(existingPatient.assignedAt || 0));
+        
+        if (shouldUpdate) {
+          existingPatient.appointmentId = appointment._id;
+          await existingPatient.save();
+          console.log('Updated existing patient with new appointment ID');
+        }
+      } catch (updateError) {
+        console.error('Error updating patient with appointment ID:', updateError);
+        // Don't fail the appointment creation if patient update fails
+      }
+    }
 
     // Send email and SMS notifications
     try {
@@ -375,6 +407,14 @@ export const approveAppointment = asyncHandler(async (req, res) => {
     // Update status to confirmed
     appointment.status = 'confirmed';
     appointment.confirmedAt = new Date();
+    // If confirmedDate is not set, use preferredDate
+    if (!appointment.confirmedDate) {
+      appointment.confirmedDate = appointment.preferredDate;
+    }
+    // If confirmedTime is not set, use preferredTime
+    if (!appointment.confirmedTime) {
+      appointment.confirmedTime = appointment.preferredTime;
+    }
     await appointment.save();
 
     // Send SMS confirmation to patient
@@ -442,23 +482,41 @@ export const updateAppointmentStatus = asyncHandler(async (req, res) => {
     
     if (status === 'confirmed') {
       appointment.confirmedAt = new Date();
+      // If confirmedDate is not set, use preferredDate
+      if (!appointment.confirmedDate) {
+        appointment.confirmedDate = appointment.preferredDate;
+      }
+      // If confirmedTime is not set, use preferredTime
+      if (!appointment.confirmedTime) {
+        appointment.confirmedTime = appointment.preferredTime;
+      }
     }
 
     await appointment.save();
+    
+    // Reload the appointment to ensure we have the latest data
+    const updatedAppointment = await PatientAppointment.findById(appointmentId);
+    
+    if (!updatedAppointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found after update'
+      });
+    }
 
     // Send confirmation email and SMS to patient if appointment is confirmed
     if (status === 'confirmed') {
       try {
         // Send SMS confirmation
-        if (appointment.patientPhone) {
-          console.log('Sending confirmation SMS to patient:', appointment.patientPhone);
-          await sendAppointmentConfirmationSMS(appointment);
+        if (updatedAppointment.patientPhone) {
+          console.log('Sending confirmation SMS to patient:', updatedAppointment.patientPhone);
+          await sendAppointmentConfirmationSMS(updatedAppointment);
           console.log('Confirmation SMS sent successfully');
         }
         
         // Send email confirmation
-        if (appointment.patientEmail) {
-          await sendAppointmentConfirmation(appointment);
+        if (updatedAppointment.patientEmail) {
+          await sendAppointmentConfirmation(updatedAppointment);
           console.log('Confirmation email sent successfully');
         }
       } catch (notificationError) {
@@ -470,7 +528,7 @@ export const updateAppointmentStatus = asyncHandler(async (req, res) => {
     res.json({
       success: true,
       message: 'Appointment status updated successfully',
-      data: appointment
+      data: updatedAppointment
     });
   } catch (error) {
     console.error('Error updating appointment status:', error);

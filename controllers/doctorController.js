@@ -422,7 +422,11 @@ export const getAssignedPatients = async (req, res) => {
       workingHoursViolation: patients.filter(p => p.workingHoursViolation && p.requiresReassignment).length
     });
     
+    // Import PatientAppointment model
+    const PatientAppointment = (await import('../models/PatientAppointment.js')).default;
+    
     // ✅ NEW: Check billing status for each patient and filter out cancelled bills
+    // ✅ Also fetch appointments for each patient
     const patientsWithBillingStatus = await Promise.all(
       patients.map(async (patient) => {
         try {
@@ -434,6 +438,64 @@ export const getAssignedPatients = async (req, res) => {
           }).select('status billing.status billing.amount');
 
           const patientObj = patient.toObject();
+          
+          // Fetch all appointments for this patient
+          const appointments = [];
+          
+          // If patient has appointmentId (singular), fetch that appointment
+          if (patient.appointmentId) {
+            try {
+              const appointment = await PatientAppointment.findById(patient.appointmentId);
+              if (appointment) {
+                appointments.push(appointment);
+              }
+            } catch (err) {
+              console.log('Error fetching appointment by ID:', err.message);
+            }
+          }
+          
+          // Also search for appointments by patient phone/email
+          if (patient.phone || patient.email) {
+            try {
+              const searchQuery = {};
+              if (patient.phone) {
+                searchQuery.patientPhone = patient.phone;
+              }
+              if (patient.email) {
+                searchQuery.$or = [
+                  { patientEmail: patient.email },
+                  { patientPhone: patient.phone }
+                ];
+              }
+              
+              // Also filter by centerId to ensure we only get appointments from the same center
+              searchQuery.centerId = req.user.centerId;
+              
+              const additionalAppointments = await PatientAppointment.find(searchQuery)
+                .sort({ preferredDate: -1 })
+                .limit(10); // Limit to recent appointments
+              
+              // Merge appointments, avoiding duplicates
+              additionalAppointments.forEach(apt => {
+                const exists = appointments.some(existing => existing._id.toString() === apt._id.toString());
+                if (!exists) {
+                  appointments.push(apt);
+                }
+              });
+            } catch (err) {
+              console.log('Error fetching appointments by phone/email:', err.message);
+            }
+          }
+          
+          // Sort appointments by date (most recent first)
+          appointments.sort((a, b) => {
+            const dateA = a.confirmedDate || a.preferredDate;
+            const dateB = b.confirmedDate || b.preferredDate;
+            return new Date(dateB) - new Date(dateA);
+          });
+          
+          // Attach appointments array to patient object
+          patientObj.appointments = appointments;
           
           // Check for cancelled bills in reassignment billing
           const hasCancelledReassignmentBill = patient.reassignedBilling && 

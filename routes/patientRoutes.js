@@ -16,6 +16,7 @@ import {
   addSampleData,
   testEndpoint,
   markPatientAsViewed,
+  markConsultationAsViewed,
   reassignDoctor,
   autoReassignUnviewedPatients,
   recordPatientRevisit,
@@ -53,6 +54,9 @@ router.get('/:id/follow-ups', ensureCenterStaffOrDoctor, getPatientFollowUps);
 
 // Doctor-specific routes
 router.put('/:patientId/mark-viewed', ensureDoctor, markPatientAsViewed);
+
+// Receptionist route to mark consultation as viewed (for completed consultations)
+router.put('/:patientId/mark-consultation-viewed', ensureCenterStaffOrDoctor, markConsultationAsViewed);
 
 // Reassignment and revisit routes
 router.put('/:patientId/reassign-doctor', ensureCenterStaffOrDoctor, reassignDoctor);

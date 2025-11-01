@@ -3951,9 +3951,26 @@ export const processPayment = async (req, res) => {
 
     // Update appointment time if provided
     if (appointmentTime) {
-      patient.appointmentTime = new Date(appointmentTime);
+      const appointmentDate = new Date(appointmentTime);
+      patient.appointmentTime = appointmentDate;
       patient.appointmentStatus = 'scheduled';
-      console.log('📅 Appointment scheduled for:', patient.appointmentTime);
+      
+      // Also save to appointments array for consistency with reassignment billing
+      if (!patient.appointments) {
+        patient.appointments = [];
+      }
+      
+      patient.appointments.push({
+        doctorId: patient.assignedDoctor || null,
+        scheduledAt: appointmentDate,
+        type: 'consultation',
+        status: 'scheduled',
+        notes: `Appointment scheduled after payment for consultation`,
+        createdAt: new Date()
+      });
+      
+      console.log('📅 Appointment scheduled for:', appointmentDate);
+      console.log('📅 Appointment added to appointments array');
     }
 
     // Check if this is a followup consultation (free within 7 days)
