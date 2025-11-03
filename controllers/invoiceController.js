@@ -655,6 +655,73 @@ export const generateConsultationInvoicePDF = async (req, res) => {
       return res.status(400).json({ message: 'No billing information found for this patient' });
     }
     
+    // CRITICAL: Filter billing to get latest invoice only (same logic as frontend)
+    // Exclude superconsultant billing - only show regular consultation billing
+    const regularConsultationBills = patient.billing.filter(bill => {
+      // Exclude superconsultant billing
+      if (bill.type === 'consultation' && bill.consultationType?.startsWith('superconsultant_')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (regularConsultationBills.length === 0) {
+      return res.status(400).json({ message: 'No regular consultation billing found for this patient' });
+    }
+
+    // Get the latest invoice number from regular consultation bills
+    // Group by invoice number and get the most recent one
+    const invoicesByNumber = {};
+    regularConsultationBills.forEach(bill => {
+      const invNum = bill.invoiceNumber;
+      if (invNum) {
+        if (!invoicesByNumber[invNum]) {
+          invoicesByNumber[invNum] = [];
+        }
+        invoicesByNumber[invNum].push(bill);
+      }
+    });
+
+    // Find the most recent invoice (by creation date)
+    let latestInvoiceNumber = null;
+    let latestInvoiceDate = null;
+    Object.keys(invoicesByNumber).forEach(invNum => {
+      const bills = invoicesByNumber[invNum];
+      const firstBill = bills[0];
+      const billDate = new Date(firstBill.createdAt || 0);
+      if (!latestInvoiceDate || billDate > latestInvoiceDate) {
+        latestInvoiceDate = billDate;
+        latestInvoiceNumber = invNum;
+      }
+    });
+
+    // If no invoice number found, use the first bill's invoice number
+    if (!latestInvoiceNumber) {
+      latestInvoiceNumber = regularConsultationBills[0]?.invoiceNumber;
+    }
+
+    // Filter billing records to ONLY include bills from the selected invoice (and exclude superconsultant)
+    const invoiceBills = patient.billing.filter(bill => {
+      // Must match invoice number
+      if (bill.invoiceNumber !== latestInvoiceNumber) {
+        return false;
+      }
+      // Exclude superconsultant billing
+      if (bill.type === 'consultation' && bill.consultationType?.startsWith('superconsultant_')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (invoiceBills.length === 0) {
+      return res.status(400).json({ message: 'No billing records found for invoice' });
+    }
+    
+    console.log(`📋 Generating invoice for patient ${patient.name}: Invoice ${latestInvoiceNumber}, Found ${invoiceBills.length} billing records:`);
+    invoiceBills.forEach((bill, idx) => {
+      console.log(`  ${idx + 1}. ${bill.type} - ${bill.description}: ₹${bill.amount}`);
+    });
+    
     // Create PDF document with professional layout
     const doc = new PDFDocument({ 
       size: 'A4', 
@@ -693,10 +760,14 @@ export const generateConsultationInvoicePDF = async (req, res) => {
        .text(`Phone: ${hospitalPhone}`, 20, 58)
        .text(`Email: ${hospitalEmail}`, 20, 71);
     
-    // Bill Details (Top Right)
-    const billNumber = `CONSULT-${Date.now()}`;
-    const billDate = new Date().toLocaleDateString('en-GB');
-    const billTime = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true });
+    // Bill Details (Top Right) - Use actual invoice data from database
+    const billNumber = latestInvoiceNumber || `CONSULT-${Date.now()}`;
+    const billDate = invoiceBills[0]?.createdAt ? 
+      new Date(invoiceBills[0].createdAt).toLocaleDateString('en-GB') : 
+      new Date().toLocaleDateString('en-GB');
+    const billTime = invoiceBills[0]?.createdAt ? 
+      new Date(invoiceBills[0].createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }) : 
+      new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true });
     
     doc.fillColor('#000000')
        .fontSize(10)
@@ -753,11 +824,11 @@ export const generateConsultationInvoicePDF = async (req, res) => {
        .font('Helvetica-Bold')
        .text('Current Services Billed', 20, servicesY);
     
-    // Calculate totals from billing records
+    // Calculate totals from FILTERED billing records only
     let grandTotal = 0;
     let totalPaid = 0;
     
-    patient.billing.forEach(bill => {
+    invoiceBills.forEach(bill => {
       grandTotal += bill.amount || 0;
       if (bill.status === 'paid' || bill.status === 'payment_received') {
         totalPaid += bill.amount || 0;
@@ -783,8 +854,8 @@ export const generateConsultationInvoicePDF = async (req, res) => {
     
     let currentRowY = tableY + 25;
     
-    // Add billing items
-    patient.billing.forEach((bill, index) => {
+    // Add billing items - only from the filtered invoiceBills
+    invoiceBills.forEach((bill, index) => {
       const amount = bill.amount || 0;
       const isPaid = bill.status === 'paid' || bill.status === 'payment_received';
       const paidAmount = isPaid ? amount : 0;
@@ -826,7 +897,7 @@ export const generateConsultationInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Total Amount: ₹${subtotal.toFixed(2)}`, 20, summaryY + 20)
+       .text(`Total Amount: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 20)
        .text(`Discount(-): ₹0.00`, 20, summaryY + 35)
        .text(`Tax Amount: ₹0.00`, 20, summaryY + 50)
        .text(`Grand Total: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 65)
@@ -1191,7 +1262,7 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Total Amount: ₹${subtotal.toFixed(2)}`, 20, summaryY + 20)
+       .text(`Total Amount: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 20)
        .text(`Discount(-): ₹0.00`, 20, summaryY + 35)
        .text(`Tax Amount: ₹0.00`, 20, summaryY + 50)
        .text(`Grand Total: ₹${grandTotal.toFixed(2)}`, 20, summaryY + 65)

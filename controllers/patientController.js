@@ -987,18 +987,38 @@ const markPatientAsViewed = async (req, res) => {
       return res.status(404).json({ message: 'Patient not found' });
     }
 
-    // Check if doctor has access to this patient (either currently assigned or previously assigned)
-    const isCurrentlyAssigned = patient.assignedDoctor && 
-      patient.assignedDoctor._id.toString() === doctorId.toString();
+    // Check if user is a superconsultant (SuperAdminDoctor)
+    const isSuperconsultant = req.user.userType === 'SuperAdminDoctor' || req.user.isSuperAdminStaff === true;
     
-    const wasPreviouslyAssigned = patient.reassignmentHistory && 
-      patient.reassignmentHistory.some(reassignment => 
-        reassignment.previousDoctor && 
-        reassignment.previousDoctor.toString() === doctorId.toString()
-      );
-
-    if (!isCurrentlyAssigned && !wasPreviouslyAssigned) {
-      return res.status(403).json({ message: 'Patient is not assigned to you' });
+    // For superconsultants, check if patient has paid superconsultant billing
+    if (isSuperconsultant) {
+      const hasPaidSuperconsultantBilling = patient.billing && patient.billing.some(bill => {
+        return bill.type === 'consultation' && 
+               bill.consultationType?.startsWith('superconsultant_') &&
+               bill.paidAmount > 0 &&
+               bill.paidAmount >= bill.amount;
+      });
+      
+      if (hasPaidSuperconsultantBilling) {
+        // Superconsultant has access - proceed to mark as viewed
+        console.log(`✅ Superconsultant ${req.user.name} marking patient ${patient.name} as viewed (paid superconsultant billing)`);
+      } else {
+        return res.status(403).json({ message: 'Patient has not paid superconsultant billing yet' });
+      }
+    } else {
+      // For regular doctors, check if doctor has access to this patient (either currently assigned or previously assigned)
+      const isCurrentlyAssigned = patient.assignedDoctor && 
+        patient.assignedDoctor._id.toString() === doctorId.toString();
+      
+      const wasPreviouslyAssigned = patient.reassignmentHistory && 
+        patient.reassignmentHistory.some(reassignment => 
+          reassignment.previousDoctor && 
+          reassignment.previousDoctor.toString() === doctorId.toString()
+        );
+      
+      if (!isCurrentlyAssigned && !wasPreviouslyAssigned) {
+        return res.status(403).json({ message: 'Patient is not assigned to you' });
+      }
     }
 
     // Mark as viewed if not already viewed

@@ -98,6 +98,11 @@ export const ensureCenterIsolation = (req, res, next) => {
     return next();
   }
   
+  // Superconsultants (SuperAdminDoctor) and SuperAdminReceptionist can access all data
+  // They are identified by userType or by checking if they're from SuperAdminDoctor/SuperAdminReceptionist models
+  if (req.user && (req.user.userType === 'SuperAdminDoctor' || req.user.userType === 'SuperAdminReceptionist' || req.user.isSuperAdminStaff === true)) {
+    return next();
+  }
   
   
   // Check for different possible role field names
@@ -119,7 +124,8 @@ export const ensureCenterIsolation = (req, res, next) => {
         userRole: req.user?.role,
         userType: req.user?.userType,
         userId: req.user?._id,
-        userName: req.user?.name
+        userName: req.user?.name,
+        isSuperAdminStaff: req.user?.isSuperAdminStaff
       }
     });
   }
@@ -148,7 +154,10 @@ export const ensureRole = (...roles) => (req, res, next) => {
 };
 
 export const ensureDoctor = (req, res, next) => {
-  if (req.user && req.user.role === 'doctor') return next();
+  // Allow regular doctors and superconsultants (SuperAdminDoctor)
+  if (req.user && (req.user.role === 'doctor' || req.user.userType === 'SuperAdminDoctor' || req.user.isSuperAdminStaff === true)) {
+    return next();
+  }
   return res.status(403).json({ message: 'Only doctors can perform this action.' });
 };
 

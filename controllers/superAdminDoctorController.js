@@ -419,6 +419,9 @@ export const getSuperAdminDoctorWorkingStats = async (req, res) => {
                );
 
       if (!superconsultantBill) continue;
+      
+      // Skip if bill is cancelled
+      if (superconsultantBill.status === 'cancelled') continue;
 
       const totalAmount = superconsultantBill.amount || 0;
       const paidAmount = superconsultantBill.paidAmount || 0;
@@ -558,9 +561,14 @@ export const getSuperAdminDoctorLabReports = async (req, res) => {
                   bill.consultationType === 'superconsultant_review_reports')
                );
 
-      // Must have superconsultant billing AND it must be paid
+      // Must have superconsultant billing AND it must be paid AND not cancelled
       if (!superconsultantBill) {
         continue; // No superconsultant billing - skip this report
+      }
+      
+      // Skip if bill is cancelled
+      if (superconsultantBill.status === 'cancelled') {
+        continue; // Bill is cancelled - skip this report
       }
 
       const totalAmount = superconsultantBill.amount || 0;
@@ -931,6 +939,11 @@ export const sendFeedbackToCenterDoctor = async (req, res) => {
 // ✅ UPDATED: Only show patients who have paid superconsultant billing
 export const getSuperAdminDoctorPatients = async (req, res) => {
   try {
+    // Get current date (start and end of day for filtering)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
     
     // First, get all test requests with completed status
     const completedTestRequests = await TestRequest.find({
@@ -946,7 +959,7 @@ export const getSuperAdminDoctorPatients = async (req, res) => {
       .populate('assignedDoctor', 'name')
       .sort({ createdAt: -1 });
 
-    // ✅ FILTER: Only include patients who have paid superconsultant billing
+    // ✅ FILTER: Only include patients who have paid superconsultant billing AND appointment date is today
     const patients = [];
     for (const patient of allPatients) {
       if (!patient.billing || patient.billing.length === 0) {
@@ -958,20 +971,40 @@ export const getSuperAdminDoctorPatients = async (req, res) => {
         bill.type === 'consultation' && 
         (bill.consultationType === 'superconsultant_normal' || 
          bill.consultationType === 'superconsultant_audio' || 
-         bill.consultationType === 'superconsultant_video')
+         bill.consultationType === 'superconsultant_video' ||
+         bill.consultationType === 'superconsultant_review_reports')
       );
 
-      // Must have superconsultant billing AND it must be paid
+      // Must have superconsultant billing AND it must be paid AND not cancelled
       if (!superconsultantBill) {
         continue; // No superconsultant billing - skip this patient
+      }
+
+      // Skip if bill is cancelled
+      if (superconsultantBill.status === 'cancelled') {
+        continue; // Bill is cancelled - skip this patient
       }
 
       const totalAmount = superconsultantBill.amount || 0;
       const paidAmount = superconsultantBill.paidAmount || 0;
       const isPaid = paidAmount >= totalAmount && totalAmount > 0;
 
-      if (isPaid) {
-        patients.push(patient); // Only include if superconsultant billing is fully paid
+      if (!isPaid) {
+        continue; // Not fully paid - skip this patient
+      }
+
+      // ✅ FILTER BY APPOINTMENT DATE: Only show patients whose appointment is scheduled for today
+      if (patient.appointmentTime) {
+        const appointmentDate = new Date(patient.appointmentTime);
+        appointmentDate.setHours(0, 0, 0, 0);
+        
+        // Only include if appointment date is today
+        if (appointmentDate.getTime() === today.getTime()) {
+          patients.push(patient);
+        }
+      } else {
+        // If no appointment time is set, don't show the patient (they need an appointment)
+        continue;
       }
     }
 
@@ -1264,10 +1297,14 @@ export const getTestRequestsForReview = async (req, res) => {
           bill.type === 'consultation' && 
           (bill.consultationType === 'superconsultant_normal' || 
            bill.consultationType === 'superconsultant_audio' || 
-           bill.consultationType === 'superconsultant_video')
+           bill.consultationType === 'superconsultant_video' ||
+           bill.consultationType === 'superconsultant_review_reports')
         );
 
         if (!superconsultantBill) continue;
+        
+        // Skip if bill is cancelled
+        if (superconsultantBill.status === 'cancelled') continue;
 
         const totalAmount = superconsultantBill.amount || 0;
         const paidAmount = superconsultantBill.paidAmount || 0;
@@ -1287,10 +1324,14 @@ export const getTestRequestsForReview = async (req, res) => {
           bill.type === 'consultation' && 
           (bill.consultationType === 'superconsultant_normal' || 
            bill.consultationType === 'superconsultant_audio' || 
-           bill.consultationType === 'superconsultant_video')
+           bill.consultationType === 'superconsultant_video' ||
+           bill.consultationType === 'superconsultant_review_reports')
         );
 
         if (!superconsultantBill) continue;
+        
+        // Skip if bill is cancelled
+        if (superconsultantBill.status === 'cancelled') continue;
 
         const totalAmount = superconsultantBill.amount || 0;
         const paidAmount = superconsultantBill.paidAmount || 0;
@@ -1521,6 +1562,9 @@ export const getTestRequestStats = async (req, res) => {
                );
 
       if (!superconsultantBill) continue;
+      
+      // Skip if bill is cancelled
+      if (superconsultantBill.status === 'cancelled') continue;
 
       const totalAmount = superconsultantBill.amount || 0;
       const paidAmount = superconsultantBill.paidAmount || 0;

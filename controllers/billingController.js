@@ -3975,6 +3975,7 @@ export const createComprehensiveInvoice = async (req, res) => {
 
 // Process payment for existing invoice
 export const processPayment = async (req, res) => {
+  let patient = null; // Declare patient outside try block for error handling
   try {
     console.log('🚀 processPayment called');
     console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
@@ -3998,7 +3999,7 @@ export const processPayment = async (req, res) => {
     }
 
     // Find patient
-    const patient = await Patient.findById(patientId);
+    patient = await Patient.findById(patientId);
     if (!patient) {
       return res.status(404).json({
         success: false,
@@ -4098,12 +4099,24 @@ export const processPayment = async (req, res) => {
       patient.consultationType = 'followup';
       console.log('🆓 Free followup consultation applied');
     } else if (consultationType) {
-      // Regular consultation billing with specific type
-      patient.consultationType = consultationType;
-      console.log('📋 Consultation type set to:', consultationType);
+      // Only set patient-level consultationType if it's NOT a superconsultant type
+      // Superconsultant types should only exist in billing records, not at patient level
+      if (!consultationType.startsWith('superconsultant_')) {
+        patient.consultationType = consultationType;
+        console.log('📋 Consultation type set to:', consultationType);
+      } else {
+        // For superconsultant types, keep patient.consultationType as OP (default)
+        // The superconsultant type is already stored in the billing record
+        if (!patient.consultationType || patient.consultationType === '') {
+          patient.consultationType = 'OP';
+        }
+        console.log('📋 Superconsultant consultation - patient type remains:', patient.consultationType);
+      }
     } else {
       // Default to OP if no specific type provided
-      patient.consultationType = 'OP';
+      if (!patient.consultationType || patient.consultationType === '') {
+        patient.consultationType = 'OP';
+      }
     }
 
     // Save patient
@@ -4347,15 +4360,93 @@ export const cancelBillWithReason = async (req, res) => {
       patientBehavior
     });
 
-    // Cancel all billing items
+    // CRITICAL: Only cancel bills matching the invoice number or billing type
+    // This prevents cancelling unrelated bills (e.g., consultation bills when cancelling superconsultant bills)
+    const invoiceNumber = req.body.invoiceNumber; // Optional: specific invoice to cancel
+    const billingType = req.body.billingType; // Optional: 'consultation' (exclude superconsultant) or 'superconsultant'
+    
+    console.log('📋 Cancellation filter:', { invoiceNumber, billingType });
+    
+    // Filter which bills to cancel
+    let billsToCancel = [];
+    let hasSuperconsultantBill = false;
+    
     patient.billing.forEach(bill => {
+      let shouldCancel = false;
+      
+      // If invoice number is provided, only cancel bills with matching invoice number
+      if (invoiceNumber) {
+        if (bill.invoiceNumber === invoiceNumber) {
+          shouldCancel = true;
+        }
+      } 
+      // If billing type is provided, filter by billing type
+      else if (billingType === 'consultation') {
+        // Cancel only regular consultation bills (exclude superconsultant)
+        if (bill.type === 'consultation' && !bill.consultationType?.startsWith('superconsultant_')) {
+          shouldCancel = true;
+        } else if (bill.type === 'registration' || bill.type === 'service') {
+          // Also cancel registration and service bills if they belong to consultation invoice
+          // Check if they share the same invoice number as a consultation bill
+          const hasConsultationBill = patient.billing.some(b => 
+            b.type === 'consultation' && 
+            !b.consultationType?.startsWith('superconsultant_') &&
+            b.invoiceNumber === bill.invoiceNumber
+          );
+          if (hasConsultationBill) {
+            shouldCancel = true;
+          }
+        }
+      } 
+      else if (billingType === 'superconsultant') {
+        // Cancel only superconsultant bills
+        if (bill.type === 'consultation' && bill.consultationType?.startsWith('superconsultant_')) {
+          shouldCancel = true;
+        } else if (bill.type === 'registration' || bill.type === 'service') {
+          // Also cancel registration and service bills if they belong to superconsultant invoice
+          const hasSuperconsultantBill = patient.billing.some(b => 
+            b.type === 'consultation' && 
+            b.consultationType?.startsWith('superconsultant_') &&
+            b.invoiceNumber === bill.invoiceNumber
+          );
+          if (hasSuperconsultantBill) {
+            shouldCancel = true;
+          }
+        }
+      }
+      // If neither invoiceNumber nor billingType provided, cancel all (backward compatibility)
+      else {
+        shouldCancel = true;
+      }
+      
+      if (shouldCancel) {
+        billsToCancel.push(bill);
+        
+        // Check if this is a superconsultant bill
+        if (bill.type === 'consultation' && bill.consultationType?.startsWith('superconsultant_')) {
+          hasSuperconsultantBill = true;
+        }
+      }
+    });
+
+    if (billsToCancel.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No matching bills found to cancel'
+      });
+    }
+
+    console.log(`🔄 Cancelling ${billsToCancel.length} bill(s) out of ${patient.billing.length} total bills`);
+
+    // Cancel only the filtered bills
+    billsToCancel.forEach(bill => {
       bill.status = 'cancelled';
       bill.cancelledAt = new Date();
       bill.cancelledBy = req.user.id || req.user._id;
       bill.cancellationReason = reason;
       
-      // Add penalty information to the latest bill
-      if (bill === latestBill) {
+      // Add penalty information to the latest bill in the cancellation set
+      if (bill === latestBill || billsToCancel[billsToCancel.length - 1] === bill) {
         bill.penaltyInfo = {
           penaltyAmount: penaltyAmount || 0,
           refundType: refundType || 'partial',
@@ -4366,6 +4457,14 @@ export const cancelBillWithReason = async (req, res) => {
         };
       }
     });
+
+    // If we cancelled a superconsultant bill, cancel the appointment
+    if (hasSuperconsultantBill) {
+      patient.appointmentTime = null;
+      patient.appointmentStatus = 'cancelled';
+      patient.appointmentNotes = `Appointment cancelled due to bill cancellation. Reason: ${reason}`;
+      console.log(`✅ Cancelled appointment for patient ${patient.name} due to bill cancellation`);
+    }
 
     // Save patient
     await patient.save();

@@ -176,7 +176,7 @@ const patientSchema = new mongoose.Schema({
   appointmentTime: { type: Date }, // Scheduled appointment time
   appointmentStatus: { 
     type: String, 
-    enum: ['scheduled', 'viewed', 'missed', 'reassigned', 'working_hours_violation'], 
+    enum: ['scheduled', 'viewed', 'missed', 'reassigned', 'working_hours_violation', 'cancelled'], 
     default: 'scheduled' 
   }, // Appointment status
   appointmentNotes: { type: String }, // Additional appointment notes
