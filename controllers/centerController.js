@@ -260,6 +260,21 @@ export const updateCenterFees = asyncHandler(async (req, res) => {
     if (req.body.fees.serviceFee !== undefined) {
       center.fees.serviceFee = req.body.fees.serviceFee;
     }
+    // Update superconsultant fees if provided
+    if (req.body.fees.superconsultantFees) {
+      if (req.body.fees.superconsultantFees.normal !== undefined) {
+        center.fees.superconsultantFees.normal = req.body.fees.superconsultantFees.normal;
+      }
+      if (req.body.fees.superconsultantFees.audio !== undefined) {
+        center.fees.superconsultantFees.audio = req.body.fees.superconsultantFees.audio;
+      }
+      if (req.body.fees.superconsultantFees.video !== undefined) {
+        center.fees.superconsultantFees.video = req.body.fees.superconsultantFees.video;
+      }
+      if (req.body.fees.superconsultantFees.reviewReports !== undefined) {
+        center.fees.superconsultantFees.reviewReports = req.body.fees.superconsultantFees.reviewReports;
+      }
+    }
   }
 
   // Update discount settings if provided

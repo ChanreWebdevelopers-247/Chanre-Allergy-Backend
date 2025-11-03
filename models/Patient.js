@@ -66,7 +66,7 @@ const billingSchema = new mongoose.Schema({
   // Consultation type and followup tracking
   consultationType: { 
     type: String, 
-    enum: ['OP', 'IP', 'followup'], 
+    enum: ['OP', 'IP', 'followup', 'superconsultant_normal', 'superconsultant_audio', 'superconsultant_video', 'superconsultant_review_reports'], 
     default: 'OP' 
   }, // Type of consultation
   isFollowup: { type: Boolean, default: false }, // Whether this is a followup visit

@@ -3643,6 +3643,7 @@ export const recordPartialPayment = async (req, res) => {
 export const createComprehensiveInvoice = async (req, res) => {
   try {
     console.log('🚀 createComprehensiveInvoice called');
+    console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
     const { 
       patientId, 
       doctorId, 
@@ -3656,54 +3657,107 @@ export const createComprehensiveInvoice = async (req, res) => {
       discountAmount,
       discountReason,
       isReassignedEntry,
-      reassignedEntryId
+      reassignedEntryId,
+      consultationType
     } = req.body;
 
-    if (!patientId || !doctorId) {
+    // Validate required fields
+    if (!patientId) {
       return res.status(400).json({
         success: false,
-        message: 'Patient ID and Doctor ID are required'
+        message: 'Patient ID is required'
+      });
+    }
+
+    if (!doctorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Doctor ID is required'
+      });
+    }
+
+    if (!consultationFee || parseFloat(consultationFee) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Consultation fee must be greater than 0'
       });
     }
 
     // Find patient
-    const patient = await Patient.findById(patientId).populate('assignedDoctor');
-    if (!patient) {
-      return res.status(404).json({
+    let patient;
+    try {
+      patient = await Patient.findById(patientId).populate('assignedDoctor');
+      if (!patient) {
+        return res.status(404).json({
+          success: false,
+          message: 'Patient not found'
+        });
+      }
+    } catch (dbError) {
+      console.error('❌ Database error finding patient:', dbError);
+      return res.status(500).json({
         success: false,
-        message: 'Patient not found'
+        message: 'Database error finding patient',
+        error: dbError.message
       });
     }
 
     // Check if patient already has billing (only for non-reassigned entries)
-    if (!isReassignedEntry && patient.billing && patient.billing.length > 0) {
+    // Allow superconsultant billing even if patient has other billing records
+    const isSuperconsultant = consultationType && consultationType.startsWith('superconsultant_');
+    
+    if (!isReassignedEntry && !isSuperconsultant && patient.billing && patient.billing.length > 0) {
       return res.status(400).json({
         success: false,
         message: 'Patient already has billing records'
       });
     }
 
+    // Check if patient already has a superconsultant invoice of the same type
+    if (isSuperconsultant && patient.billing && patient.billing.length > 0) {
+      const existingSuperconsultantBill = patient.billing.find(bill => 
+        bill.type === 'consultation' && 
+        bill.consultationType === consultationType &&
+        bill.status !== 'cancelled' &&
+        bill.status !== 'refunded'
+      );
+      
+      if (existingSuperconsultantBill) {
+        return res.status(400).json({
+          success: false,
+          message: `Patient already has an active ${consultationType} invoice. Please process payment for the existing invoice instead.`
+        });
+      }
+    }
+
     // Generate invoice number
     const invoiceNumber = `INV-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
     
-    // Initialize billing array (only for new invoices, not reassigned entries)
-    if (!isReassignedEntry) {
+    // Initialize billing array (only for new invoices, not reassigned entries or superconsultant)
+    // For superconsultant, we append to existing billing array
+    if (!isReassignedEntry && !isSuperconsultant) {
+      patient.billing = [];
+    }
+    
+    // Ensure billing array exists for superconsultant
+    if (!patient.billing) {
       patient.billing = [];
     }
 
     // Add registration fee if provided
-    if (registrationFee > 0) {
+    if (parseFloat(registrationFee) > 0) {
       const registrationBill = {
         type: 'registration',
         description: 'Registration Fee',
-        amount: registrationFee,
+        amount: parseFloat(registrationFee),
+        paidAmount: 0,
         paymentMethod: 'pending',
         status: 'pending',
         invoiceNumber: invoiceNumber,
         // Store discount information
         discountType: discountType || 'percentage',
-        discountPercentage: discountPercentage || 0,
-        discountAmount: discountAmount || 0,
+        discountPercentage: parseFloat(discountPercentage) || 0,
+        discountAmount: parseFloat(discountAmount) || 0,
         discountReason: discountReason || '',
         createdAt: new Date()
       };
@@ -3750,18 +3804,32 @@ export const createComprehensiveInvoice = async (req, res) => {
       console.log('🆓 Free followup consultation applied');
     } else if (consultationFee > 0) {
       // Add regular consultation fee
+      // Use provided consultationType or default to OP
+      const finalConsultationType = consultationType || 'OP';
+      
+      // Format description for superconsultant types
+      let consultationDescription = 'Doctor Consultation Fee';
+      if (finalConsultationType.startsWith('superconsultant_')) {
+        const typeName = finalConsultationType
+          .replace('superconsultant_', '')
+          .replace(/_/g, ' ')
+          .replace(/\b\w/g, l => l.toUpperCase());
+        consultationDescription = `Superconsultant ${typeName} Consultation Fee`;
+      }
+      
       const consultationBill = {
         type: 'consultation',
-        description: 'Doctor Consultation Fee',
-        amount: consultationFee,
+        description: consultationDescription,
+        amount: parseFloat(consultationFee) || 0,
+        paidAmount: 0,
         paymentMethod: 'pending',
         status: 'pending',
         invoiceNumber: invoiceNumber,
-        consultationType: 'OP', // Default to OP, can be changed to IP
+        consultationType: finalConsultationType, // Use provided type (OP, IP, or superconsultant types)
         // Store discount information
         discountType: discountType || 'percentage',
-        discountPercentage: discountPercentage || 0,
-        discountAmount: discountAmount || 0,
+        discountPercentage: parseFloat(discountPercentage) || 0,
+        discountAmount: parseFloat(discountAmount) || 0,
         discountReason: discountReason || '',
         createdAt: new Date()
       };
@@ -3775,26 +3843,36 @@ export const createComprehensiveInvoice = async (req, res) => {
       
       patient.billing.push(consultationBill);
       
-      // Set followup eligibility for future visits
-      patient.lastPaidConsultationDate = new Date();
-      patient.followupEligible = true;
-      patient.followupExpiryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
-      patient.consultationType = 'OP';
-      console.log('💰 Regular consultation fee added, followup eligibility set');
+      // Set followup eligibility for future visits (only for regular consultations, not superconsultant)
+      if (!finalConsultationType.startsWith('superconsultant_')) {
+        patient.lastPaidConsultationDate = new Date();
+        patient.followupEligible = true;
+        patient.followupExpiryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
+        // Only set patient-level consultationType for regular consultations
+        // Superconsultant types should only be in billing records, not at patient level
+        patient.consultationType = finalConsultationType;
+      }
+      // For superconsultant, don't update patient-level consultationType
+      // Keep it as is (OP, IP, or followup)
+      console.log(`💰 Consultation fee added with type: ${finalConsultationType}`);
     }
 
     // Add service charges
-    if (serviceCharges && serviceCharges.length > 0) {
+    if (serviceCharges && Array.isArray(serviceCharges) && serviceCharges.length > 0) {
       serviceCharges.forEach(service => {
-        if (service.name && service.amount) {
+        // Validate service charge data
+        const serviceName = service.name || service.description || '';
+        const serviceAmount = parseFloat(service.amount) || 0;
+        
+        if (serviceName.trim() && serviceAmount > 0) {
           const serviceBill = {
             type: 'service',
-            description: service.name,
-            amount: parseFloat(service.amount),
+            description: serviceName.trim(),
+            amount: serviceAmount,
             paymentMethod: 'pending',
             status: 'pending',
             invoiceNumber: invoiceNumber,
-            serviceDetails: service.description || '',
+            serviceDetails: service.serviceDetails || service.description || serviceName.trim(),
             // Store discount information
             discountType: discountType || 'percentage',
             discountPercentage: discountPercentage || 0,
@@ -3816,22 +3894,37 @@ export const createComprehensiveInvoice = async (req, res) => {
     }
 
     // Calculate totals
-    const subtotal = registrationFee + consultationFee + 
-      serviceCharges.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
-    const taxAmount = subtotal * (taxPercentage / 100);
+    const serviceChargesTotal = (serviceCharges && Array.isArray(serviceCharges)) 
+      ? serviceCharges.reduce((sum, s) => {
+          const amount = parseFloat(s.amount) || 0;
+          const name = s.name || s.description || '';
+          return (name.trim() && amount > 0) ? sum + amount : sum;
+        }, 0)
+      : 0;
+    const subtotal = (parseFloat(registrationFee) || 0) + (parseFloat(consultationFee) || 0) + serviceChargesTotal;
+    const taxPercentageValue = parseFloat(taxPercentage) || 0;
+    const taxAmount = subtotal * (taxPercentageValue / 100);
     
     // Calculate discount based on type
     let calculatedDiscountAmount = 0;
     if (discountType === 'percentage') {
-      calculatedDiscountAmount = subtotal * (discountPercentage / 100);
+      const discountPercentageValue = parseFloat(discountPercentage) || 0;
+      calculatedDiscountAmount = subtotal * (discountPercentageValue / 100);
     } else if (discountType === 'amount') {
-      calculatedDiscountAmount = discountAmount || 0;
+      calculatedDiscountAmount = parseFloat(discountAmount) || 0;
     }
     
     const total = subtotal + taxAmount - calculatedDiscountAmount;
 
     // Save patient
-    await patient.save();
+    try {
+      await patient.save();
+      console.log('✅ Patient saved successfully with billing records');
+    } catch (saveError) {
+      console.error('❌ Error saving patient:', saveError);
+      console.error('❌ Patient billing array:', JSON.stringify(patient.billing, null, 2));
+      throw new Error(`Failed to save patient: ${saveError.message}`);
+    }
 
     // Create invoice data for response
     const invoice = {
@@ -3870,10 +3963,12 @@ export const createComprehensiveInvoice = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error creating comprehensive invoice:', error);
+    console.error('❌ Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to create invoice',
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
@@ -3891,7 +3986,8 @@ export const processPayment = async (req, res) => {
       paymentMethod, 
       paymentType, 
       notes,
-      appointmentTime
+      appointmentTime,
+      consultationType
     } = req.body;
 
     if (!patientId || !amount || !paymentMethod) {
@@ -4001,13 +4097,75 @@ export const processPayment = async (req, res) => {
       patient.followupUsed = true;
       patient.consultationType = 'followup';
       console.log('🆓 Free followup consultation applied');
+    } else if (consultationType) {
+      // Regular consultation billing with specific type
+      patient.consultationType = consultationType;
+      console.log('📋 Consultation type set to:', consultationType);
     } else {
-      // Regular consultation billing
-      patient.consultationType = 'OP'; // Default to OP, can be changed to IP if needed
+      // Default to OP if no specific type provided
+      patient.consultationType = 'OP';
     }
 
     // Save patient
     await patient.save();
+
+    // ✅ NEW: Check if superconsultant billing was paid and notify superconsultant
+    try {
+           const superconsultantBill = patient.billing.find(bill =>
+             bill.type === 'consultation' &&
+             (bill.consultationType === 'superconsultant_normal' ||
+              bill.consultationType === 'superconsultant_audio' ||
+              bill.consultationType === 'superconsultant_video' ||
+              bill.consultationType === 'superconsultant_review_reports')
+           );
+
+      if (superconsultantBill && superconsultantBill.status === 'paid') {
+        console.log('✅ Superconsultant billing paid - sending notification to superconsultant');
+        
+        const Notification = (await import('../models/Notification.js')).default;
+        const SuperAdminDoctor = (await import('../models/SuperAdminDoctor.js')).default;
+        
+        // Find all active superconsultants
+        const superconsultants = await SuperAdminDoctor.find({ 
+          status: 'active',
+          isSuperAdminStaff: true
+        });
+
+        // Get patient's completed lab reports
+        const TestRequest = (await import('../models/TestRequest.js')).default;
+        const completedReports = await TestRequest.find({
+          patientId: patient._id,
+          status: { $in: ['Report_Generated', 'Report_Sent', 'Completed'] }
+        }).limit(5); // Get recent reports
+
+        // Notify each superconsultant
+        for (const superconsultant of superconsultants) {
+          const notification = new Notification({
+            recipient: superconsultant._id,
+            sender: req.user.id || req.user._id,
+            type: 'test_request',
+            title: 'Lab Reports Available for Review',
+            message: `Patient ${patient.name} has completed superconsultant billing payment. ${completedReports.length > 0 ? `${completedReports.length} lab report(s) are now available for review.` : 'Lab reports will be available once tests are completed.'}`,
+            data: {
+              patientId: patient._id,
+              patientName: patient.name,
+              consultationType: superconsultantBill.consultationType,
+              paymentAmount: superconsultantBill.amount,
+              paidAmount: superconsultantBill.paidAmount,
+              completedReportsCount: completedReports.length,
+              testRequestIds: completedReports.map(r => r._id),
+              status: 'payment_completed'
+            },
+            read: false
+          });
+          await notification.save();
+          console.log(`✅ Notification sent to superconsultant: ${superconsultant.name}`);
+        }
+      }
+    } catch (superconsultantNotifyError) {
+      console.error('⚠️ Error notifying superconsultant:', superconsultantNotifyError);
+      // Continue execution - notification failure should not stop the payment
+    }
 
     // Log payment transaction for patient billing
     try {
@@ -4020,7 +4178,7 @@ export const processPayment = async (req, res) => {
         paymentType: paymentType || 'consultation',
         notes: notes || `Payment processed for patient: ${patient.name}`,
         invoiceNumber: patient.billing[0]?.invoiceNumber || `INV-${patient._id.toString().slice(-6)}`,
-        consultationType: req.body.consultationType || 'OP',
+        consultationType: consultationType || 'OP',
         appointmentTime: appointmentTime,
         status: 'completed'
       };

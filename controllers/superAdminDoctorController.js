@@ -392,56 +392,88 @@ export const getSuperAdminDoctorWorkingStats = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get total patients with completed lab reports
-    const completedTestRequests = await TestRequest.find({
+    // Get all completed lab reports first
+    const allCompletedTestRequests = await TestRequest.find({
       status: { $in: ['Report_Generated', 'Report_Sent', 'Completed'] }
-    });
+    }).populate('patientId', 'billing consultationType');
 
-    const patientIds = [...new Set(completedTestRequests.map(req => req.patientId.toString()))];
+    // ✅ FILTER: Only count reports for patients who have paid superconsultant billing
+    const completedTestRequests = [];
+    for (const testRequest of allCompletedTestRequests) {
+      const patient = testRequest.patientId;
+      if (!patient) continue;
+      
+      // Get fresh patient data with billing
+      const freshPatient = await Patient.findById(patient._id || patient);
+      if (!freshPatient || !freshPatient.billing || freshPatient.billing.length === 0) {
+        continue;
+      }
+
+      // Check if patient has superconsultant consultation billing that is paid
+               const superconsultantBill = freshPatient.billing.find(bill =>
+                 bill.type === 'consultation' &&
+                 (bill.consultationType === 'superconsultant_normal' ||
+                  bill.consultationType === 'superconsultant_audio' ||
+                  bill.consultationType === 'superconsultant_video' ||
+                  bill.consultationType === 'superconsultant_review_reports')
+               );
+
+      if (!superconsultantBill) continue;
+
+      const totalAmount = superconsultantBill.amount || 0;
+      const paidAmount = superconsultantBill.paidAmount || 0;
+      const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+
+      if (isPaid) {
+        completedTestRequests.push(testRequest);
+      }
+    }
+
+    const patientIds = [...new Set(completedTestRequests.map(req => (req.patientId?._id || req.patientId)?.toString()).filter(Boolean))];
     const totalPatients = patientIds.length;
 
-    // Get total lab reports
+    // Get total lab reports (already filtered)
     const totalLabReports = completedTestRequests.length;
 
-    // Get recent activities (last 7 days)
+    // Get recent activities (last 7 days) - filtered by payment
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    const recentReports = await TestRequest.find({
-      status: { $in: ['Report_Generated', 'Report_Sent', 'Completed'] },
-      updatedAt: { $gte: sevenDaysAgo }
+    const recentReports = completedTestRequests.filter(req => {
+      const updatedAt = req.updatedAt || new Date(req.createdAt);
+      return updatedAt >= sevenDaysAgo;
     });
 
-    // Get pending lab reports (for review)
-    const pendingLabReports = await TestRequest.countDocuments({
-      status: { $in: ['Report_Generated', 'Report_Sent'] }
-    });
+    // Get pending lab reports (for review) - filtered by payment
+    const pendingLabReports = completedTestRequests.filter(req => 
+      ['Report_Generated', 'Report_Sent'].includes(req.status)
+    ).length;
 
-    // Get completed reports
-    const completedReports = await TestRequest.countDocuments({
-      status: 'Completed'
-    });
+    // Get completed reports - filtered by payment
+    const completedReports = completedTestRequests.filter(req => 
+      req.status === 'Completed'
+    ).length;
 
-    // Get reports awaiting superadmin review
-    const awaitingReview = await TestRequest.countDocuments({
-      status: { $in: ['Report_Generated', 'Report_Sent'] },
-      'superadminReview.status': { $ne: 'reviewed' }
-    });
+    // Get reports awaiting superadmin review - filtered by payment
+    const awaitingReview = completedTestRequests.filter(req => 
+      ['Report_Generated', 'Report_Sent'].includes(req.status) &&
+      (!req.superadminReview || req.superadminReview.status !== 'reviewed')
+    ).length;
 
-    // Get reports reviewed by this superadmin consultant
-    const reviewedByMe = await TestRequest.countDocuments({
-      'superadminReview.reviewedBy': userId
-    });
+    // Get reports reviewed by this superadmin consultant - filtered by payment
+    const reviewedByMe = completedTestRequests.filter(req => 
+      req.superadminReview?.reviewedBy?.toString() === userId.toString()
+    ).length;
 
-    // Get total centers with patients
-    const centersWithPatients = await TestRequest.distinct('centerId', {
-      status: { $in: ['Report_Generated', 'Report_Sent', 'Completed'] }
-    });
+    // Get total centers with patients (filtered)
+    const centersWithPatients = [...new Set(completedTestRequests.map(req => 
+      (req.centerId?._id || req.centerId)?.toString()
+    ).filter(Boolean))];
 
-    // Get total doctors with reports
-    const doctorsWithReports = await TestRequest.distinct('doctorId', {
-      status: { $in: ['Report_Generated', 'Report_Sent', 'Completed'] }
-    });
+    // Get total doctors with reports (filtered)
+    const doctorsWithReports = [...new Set(completedTestRequests.map(req => 
+      (req.doctorId?._id || req.doctorId)?.toString()
+    ).filter(Boolean))];
 
     res.json({
       totalPatients,
@@ -461,6 +493,7 @@ export const getSuperAdminDoctorWorkingStats = async (req, res) => {
 };
 
 // Lab Reports functionality for superadmin consultants
+// ✅ UPDATED: Only show reports for patients who have paid superconsultant billing
 export const getSuperAdminDoctorLabReports = async (req, res) => {
   try {
     const { page = 1, limit = 10, status, search } = req.query;
@@ -499,27 +532,70 @@ export const getSuperAdminDoctorLabReports = async (req, res) => {
       ];
     }
 
-    // Get total count
-    const total = await TestRequest.countDocuments(query);
-    
+    // Get all matching test requests first (must have completed lab tests)
+    const allTestRequests = await TestRequest.find(query)
+      .populate('patientId', 'name age gender phone billing consultationType')
+      .sort({ updatedAt: -1 });
+
+    // ✅ FILTER: Only include reports for patients who have paid superconsultant billing
+    const filteredReports = [];
+    for (const testRequest of allTestRequests) {
+      const patient = testRequest.patientId;
+      if (!patient) continue; // Skip if patient not found
+      
+      // Get fresh patient data with billing
+      const freshPatient = await Patient.findById(patient._id || patient);
+      if (!freshPatient || !freshPatient.billing || freshPatient.billing.length === 0) {
+        continue; // No billing = no superconsultant payment
+      }
+
+      // Check if patient has superconsultant consultation billing that is paid
+               const superconsultantBill = freshPatient.billing.find(bill =>
+                 bill.type === 'consultation' &&
+                 (bill.consultationType === 'superconsultant_normal' ||
+                  bill.consultationType === 'superconsultant_audio' ||
+                  bill.consultationType === 'superconsultant_video' ||
+                  bill.consultationType === 'superconsultant_review_reports')
+               );
+
+      // Must have superconsultant billing AND it must be paid
+      if (!superconsultantBill) {
+        continue; // No superconsultant billing - skip this report
+      }
+
+      const totalAmount = superconsultantBill.amount || 0;
+      const paidAmount = superconsultantBill.paidAmount || 0;
+      const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+
+      if (isPaid) {
+        filteredReports.push(testRequest); // Only include if superconsultant billing is fully paid
+      }
+    }
+
+    // Apply pagination to filtered results
+    const total = filteredReports.length;
+    const labReports = filteredReports.slice(skip, skip + parseInt(limit));
+
+    // Populate additional fields for the filtered reports
+    const populatedReports = await Promise.all(
+      labReports.map(async (testRequest) => {
+        return await TestRequest.findById(testRequest._id)
+          .populate('doctorId', 'name email')
+          .populate('patientId', 'name age gender phone')
+          .populate('assignedLabStaffId', 'name')
+          .populate('sampleCollectorId', 'name')
+          .populate('labTechnicianId', 'name')
+          .populate('centerId', 'name code');
+      })
+    );
+
     // Debug: Log the query and total count
     console.log('🔍 Lab Reports Query:', JSON.stringify(query, null, 2));
-    console.log('🔍 Total test requests found:', total);
-
-    // Get lab reports with pagination
-    const labReports = await TestRequest.find(query)
-      .populate('doctorId', 'name email')
-      .populate('patientId', 'name age gender phone')
-      .populate('assignedLabStaffId', 'name')
-      .populate('sampleCollectorId', 'name')
-      .populate('labTechnicianId', 'name')
-      .populate('centerId', 'name code')
-      .sort({ updatedAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+    console.log('🔍 Total test requests found (before superconsultant payment filter):', allTestRequests.length);
+    console.log('🔍 Total test requests after superconsultant payment filter:', total);
 
     // Transform data for frontend
-    const transformedReports = labReports.map(report => {
+    const transformedReports = populatedReports.map(report => {
       // Map backend status to frontend expected status
       let frontendStatus = report.status;
       if (report.status === 'Completed') frontendStatus = 'completed';
@@ -851,7 +927,8 @@ export const sendFeedbackToCenterDoctor = async (req, res) => {
   }
 };
 
-// Get all patients for superadmin consultant (only those with completed lab reports)
+// Get all patients for superadmin consultant (only those with completed lab reports AND paid superconsultant billing)
+// ✅ UPDATED: Only show patients who have paid superconsultant billing
 export const getSuperAdminDoctorPatients = async (req, res) => {
   try {
     
@@ -863,11 +940,40 @@ export const getSuperAdminDoctorPatients = async (req, res) => {
     // Extract unique patient IDs from completed test requests
     const patientIds = [...new Set(completedTestRequests.map(tr => tr.patientId))];
     
-    // Get patients who have completed lab reports
-    const patients = await Patient.find({ _id: { $in: patientIds } })
+    // Get all patients who have completed lab reports
+    const allPatients = await Patient.find({ _id: { $in: patientIds } })
       .populate('centerId', 'name code')
       .populate('assignedDoctor', 'name')
       .sort({ createdAt: -1 });
+
+    // ✅ FILTER: Only include patients who have paid superconsultant billing
+    const patients = [];
+    for (const patient of allPatients) {
+      if (!patient.billing || patient.billing.length === 0) {
+        continue; // No billing = no superconsultant payment
+      }
+
+      // Check if patient has superconsultant consultation billing that is paid
+      const superconsultantBill = patient.billing.find(bill => 
+        bill.type === 'consultation' && 
+        (bill.consultationType === 'superconsultant_normal' || 
+         bill.consultationType === 'superconsultant_audio' || 
+         bill.consultationType === 'superconsultant_video')
+      );
+
+      // Must have superconsultant billing AND it must be paid
+      if (!superconsultantBill) {
+        continue; // No superconsultant billing - skip this patient
+      }
+
+      const totalAmount = superconsultantBill.amount || 0;
+      const paidAmount = superconsultantBill.paidAmount || 0;
+      const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+
+      if (isPaid) {
+        patients.push(patient); // Only include if superconsultant billing is fully paid
+      }
+    }
 
     res.json({
       patients,
@@ -1101,14 +1207,17 @@ export const getSuperAdminDoctorPatientLabReports = async (req, res) => {
 }; 
 
 // ✅ NEW: Get test requests pending superadmin review
+// ✅ UPDATED: Only show test requests for patients who have paid superconsultant billing
 export const getTestRequestsForReview = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status = '', urgency = '', centerId = '' } = req.query;
+    const { page = 1, limit = 10, status = '', urgency = '', centerId = '', search = '' } = req.query;
     
     // Build query for test requests that need superadmin review
-    const query = {
-      status: { $in: ['Superadmin_Review', 'Superadmin_Rejected'] },
-      'superadminReview.status': { $in: ['pending', 'requires_changes'] }
+    // Show all completed test requests (not just pending review)
+    let query = {
+      status: { 
+        $in: ['Report_Generated', 'Report_Sent', 'Completed', 'Superadmin_Review', 'Superadmin_Rejected'] 
+      }
     };
 
     // Add filters
@@ -1124,20 +1233,79 @@ export const getTestRequestsForReview = async (req, res) => {
       query.centerId = centerId;
     }
 
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    // Get total count
-    const total = await TestRequest.countDocuments(query);
-    
-    // Get test requests with pagination
-    const testRequests = await TestRequest.find(query)
+    if (search) {
+      query.$or = [
+        { testType: { $regex: search, $options: 'i' } },
+        { 'patientId.name': { $regex: search, $options: 'i' } },
+        { 'doctorId.name': { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Get all matching test requests first
+    const allTestRequests = await TestRequest.find(query)
       .populate('doctorId', 'name email phone')
       .populate('patientId', 'name age gender phone address')
       .populate('centerId', 'name code')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+      .sort({ createdAt: -1 });
+
+    // ✅ FILTER: Only include test requests for patients who have paid superconsultant billing
+    const filteredRequests = [];
+    for (const testRequest of allTestRequests) {
+      const patient = testRequest.patientId;
+      if (!patient || typeof patient === 'string') {
+        // If patient is just an ID, fetch it
+        const patientDoc = await Patient.findById(patient || testRequest.patientId);
+        if (!patientDoc || !patientDoc.billing || patientDoc.billing.length === 0) {
+          continue; // No billing = no superconsultant payment
+        }
+
+        // Check if patient has superconsultant consultation billing that is paid
+        const superconsultantBill = patientDoc.billing.find(bill => 
+          bill.type === 'consultation' && 
+          (bill.consultationType === 'superconsultant_normal' || 
+           bill.consultationType === 'superconsultant_audio' || 
+           bill.consultationType === 'superconsultant_video')
+        );
+
+        if (!superconsultantBill) continue;
+
+        const totalAmount = superconsultantBill.amount || 0;
+        const paidAmount = superconsultantBill.paidAmount || 0;
+        const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+
+        if (isPaid) {
+          filteredRequests.push(testRequest);
+        }
+      } else {
+        // Patient is already populated
+        if (!patient.billing || patient.billing.length === 0) {
+          continue; // No billing = no superconsultant payment
+        }
+
+        // Check if patient has superconsultant consultation billing that is paid
+        const superconsultantBill = patient.billing.find(bill => 
+          bill.type === 'consultation' && 
+          (bill.consultationType === 'superconsultant_normal' || 
+           bill.consultationType === 'superconsultant_audio' || 
+           bill.consultationType === 'superconsultant_video')
+        );
+
+        if (!superconsultantBill) continue;
+
+        const totalAmount = superconsultantBill.amount || 0;
+        const paidAmount = superconsultantBill.paidAmount || 0;
+        const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+
+        if (isPaid) {
+          filteredRequests.push(testRequest);
+        }
+      }
+    }
+
+    // Apply pagination to filtered results
+    const total = filteredRequests.length;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const testRequests = filteredRequests.slice(skip, skip + parseInt(limit));
 
     const totalPages = Math.ceil(total / parseInt(limit));
 
@@ -1320,36 +1488,78 @@ export const reviewTestRequest = async (req, res) => {
 };
 
 // ✅ NEW: Get test request statistics for superadmin consultant dashboard
+// ✅ UPDATED: Only count test requests for patients who have paid superconsultant billing
 export const getTestRequestStats = async (req, res) => {
   try {
-    const stats = await TestRequest.aggregate([
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 }
-        }
+    // Get all test requests first
+    const allTestRequests = await TestRequest.find({
+      status: { 
+        $in: ['Report_Generated', 'Report_Sent', 'Completed', 'Superadmin_Review', 'Superadmin_Rejected', 'Superadmin_Approved'] 
       }
-    ]);
+    }).populate('patientId', 'billing consultationType');
 
-    const totalPending = await TestRequest.countDocuments({
-      status: { $in: ['Superadmin_Review', 'Superadmin_Rejected'] },
-      'superadminReview.status': { $in: ['pending', 'requires_changes'] }
+    // ✅ FILTER: Only count test requests for patients who have paid superconsultant billing
+    const filteredRequests = [];
+    for (const testRequest of allTestRequests) {
+      const patient = testRequest.patientId;
+      if (!patient) continue;
+      
+      // Get fresh patient data with billing
+      const patientId = patient._id || patient;
+      const freshPatient = await Patient.findById(patientId);
+      if (!freshPatient || !freshPatient.billing || freshPatient.billing.length === 0) {
+        continue;
+      }
+
+      // Check if patient has superconsultant consultation billing that is paid
+               const superconsultantBill = freshPatient.billing.find(bill =>
+                 bill.type === 'consultation' &&
+                 (bill.consultationType === 'superconsultant_normal' ||
+                  bill.consultationType === 'superconsultant_audio' ||
+                  bill.consultationType === 'superconsultant_video' ||
+                  bill.consultationType === 'superconsultant_review_reports')
+               );
+
+      if (!superconsultantBill) continue;
+
+      const totalAmount = superconsultantBill.amount || 0;
+      const paidAmount = superconsultantBill.paidAmount || 0;
+      const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+
+      if (isPaid) {
+        filteredRequests.push(testRequest);
+      }
+    }
+
+    // Calculate stats from filtered requests
+    const stats = {};
+    filteredRequests.forEach(req => {
+      stats[req.status] = (stats[req.status] || 0) + 1;
     });
 
-    const totalApproved = await TestRequest.countDocuments({
-      status: 'Superadmin_Approved'
-    });
+    const totalPending = filteredRequests.filter(req => 
+      ['Superadmin_Review', 'Superadmin_Rejected'].includes(req.status) &&
+      req.superadminReview?.status && 
+      ['pending', 'requires_changes'].includes(req.superadminReview.status)
+    ).length;
 
-    const totalRejected = await TestRequest.countDocuments({
-      status: 'Superadmin_Rejected'
-    });
+    const totalApproved = filteredRequests.filter(req => 
+      req.status === 'Superadmin_Approved'
+    ).length;
+
+    const totalRejected = filteredRequests.filter(req => 
+      req.status === 'Superadmin_Rejected'
+    ).length;
+
+    const totalRequests = filteredRequests.length;
 
     res.json({
       stats: {
+        totalRequests,
         totalPending,
         totalApproved,
         totalRejected,
-        breakdown: stats
+        breakdown: Object.entries(stats).map(([status, count]) => ({ _id: status, count }))
       }
     });
   } catch (error) {

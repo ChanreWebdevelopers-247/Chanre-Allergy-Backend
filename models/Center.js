@@ -43,6 +43,25 @@ const centerSchema = new mongoose.Schema({
     serviceFee: {
       type: Number,
       default: 150
+    },
+    // Superconsultant consultation fees
+    superconsultantFees: {
+      normal: {
+        type: Number,
+        default: 850
+      },
+      audio: {
+        type: Number,
+        default: 950
+      },
+      video: {
+        type: Number,
+        default: 1050
+      },
+      reviewReports: {
+        type: Number,
+        default: 750
+      }
     }
   },
   // Discount settings - maps discount reasons to percentages
