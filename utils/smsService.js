@@ -149,26 +149,189 @@ const sendFast2SMS = async (to, message) => {
   }
 };
 
-// SMS message templates
-const smsTemplates = {
-  appointmentBookingSuccess: (appointment) => 
-    `Dear ${appointment.patientName},\n\n` +
-    `Your appointment request has been sent!\n\n` +
-    `Confirmation Code: ${appointment.confirmationCode}\n` +
-    `Center: ${appointment.centerName}\n\n` +
-    `Our receptionist will contact you soon to confirm your appointment.\n\n` +
-    `Please keep this confirmation code for reference.\n\n` +
-    `- ChanRe Allergy Center`,
+// Helper function to format date in Indian format
+const formatDate = (date) => {
+  if (!date) return 'N/A';
+  const d = new Date(date);
+  return d.toLocaleDateString('en-IN', { 
+    day: '2-digit', 
+    month: 'short', 
+    year: 'numeric' 
+  });
+};
 
-  appointmentConfirmation: (appointment) => 
-    `Dear ${appointment.patientName},\n\n` +
-    `Your appointment has been scheduled!\n\n` +
-    `Confirmation Code: ${appointment.confirmationCode}\n` +
-    `Center: ${appointment.centerName}\n` +
-    `Date: ${appointment.confirmedDate ? new Date(appointment.confirmedDate).toLocaleDateString() : new Date(appointment.preferredDate).toLocaleDateString()}\n` +
-    `Time: ${appointment.confirmedTime || appointment.preferredTime}\n\n` +
-    `Please arrive 15 minutes before your appointment.\n\n` +
-    `- ChanRe Allergy Center`
+// Helper function to format time
+const formatTime = (time) => {
+  if (!time) return 'N/A';
+  // If time is in HH:MM format, convert to 12-hour format
+  if (time.includes(':')) {
+    const [hours, minutes] = time.split(':');
+    const hour = parseInt(hours);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const hour12 = hour % 12 || 12;
+    return `${hour12}:${minutes} ${ampm}`;
+  }
+  return time;
+};
+
+// SMS message templates - Optimized for Fast2SMS (concise and clear)
+const smsTemplates = {
+  // Template 1: Appointment Booking Success (Initial Booking)
+  appointmentBookingSuccess: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+Your appointment request received!
+
+Booking ID: ${code}
+Center: ${centerName}
+
+Our team will contact you shortly to confirm your slot. Keep this code for reference.
+
+ChanRe Allergy Center`;
+  },
+
+  // Template 2: Appointment Confirmation (When appointment is confirmed)
+  appointmentConfirmation: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    const date = appointment.confirmedDate 
+      ? formatDate(appointment.confirmedDate) 
+      : formatDate(appointment.preferredDate);
+    const time = appointment.confirmedTime || appointment.preferredTime;
+    const formattedTime = formatTime(time);
+    const centerPhone = appointment.centerPhone || '';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+Appointment CONFIRMED!
+
+ID: ${code}
+Date: ${date}
+Time: ${formattedTime}
+Center: ${centerName}${centerPhone ? `\nPhone: ${centerPhone}` : ''}
+
+Please arrive 15 mins early. Bring ID proof & previous reports.
+
+ChanRe Allergy Center`;
+  },
+
+  // Template 3: Appointment Rescheduled
+  appointmentRescheduled: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    const date = appointment.confirmedDate 
+      ? formatDate(appointment.confirmedDate) 
+      : formatDate(appointment.preferredDate);
+    const time = appointment.confirmedTime || appointment.preferredTime;
+    const formattedTime = formatTime(time);
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+Your appointment has been RESCHEDULED!
+
+ID: ${code}
+New Date: ${date}
+New Time: ${formattedTime}
+Center: ${centerName}
+
+Please note the changes. Reach 15 mins before appointment.
+
+ChanRe Allergy Center`;
+  },
+
+  // Template 4: Appointment Cancellation
+  appointmentCancelled: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    const reason = appointment.cancellationReason 
+      ? `\nReason: ${appointment.cancellationReason}` 
+      : '';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+Appointment CANCELLED!
+
+ID: ${code}
+Center: ${centerName}${reason}
+
+To book a new appointment, call us or visit our website.
+
+Thank you.
+ChanRe Allergy Center`;
+  },
+
+  // Template 5: Appointment Reminder (Day Before)
+  appointmentReminder: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    const date = appointment.confirmedDate 
+      ? formatDate(appointment.confirmedDate) 
+      : formatDate(appointment.preferredDate);
+    const time = appointment.confirmedTime || appointment.preferredTime;
+    const formattedTime = formatTime(time);
+    const centerAddress = appointment.centerAddress || '';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+REMINDER: Your appointment is tomorrow!
+
+ID: ${code}
+Date: ${date}
+Time: ${formattedTime}
+Center: ${centerName}${centerAddress ? `\nAddress: ${centerAddress}` : ''}
+
+Please arrive 15 mins early. Bring ID proof & medical reports.
+
+ChanRe Allergy Center`;
+  },
+
+  // Template 6: Appointment Rejected/Declined
+  appointmentRejected: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+We regret to inform that your appointment request (ID: ${code}) at ${centerName} could not be confirmed.
+
+Please contact us to book an alternative slot or visit our website for more options.
+
+ChanRe Allergy Center`;
+  },
+
+  // Template 7: Appointment Completed (Follow-up)
+  appointmentCompleted: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+Thank you for visiting ${centerName}!
+
+Appointment ID: ${code}
+
+We hope you had a good experience. For follow-up appointments or queries, please contact us.
+
+Stay healthy!
+ChanRe Allergy Center`;
+  },
+
+  // Template 8: No Show Reminder
+  appointmentNoShow: (appointment) => {
+    const centerName = appointment.centerName || 'ChanRe Allergy Center';
+    const code = appointment.confirmationCode || 'N/A';
+    
+    return `Dear ${appointment.patientName || 'Patient'},
+
+We noticed you missed your appointment (ID: ${code}) at ${centerName}.
+
+Please contact us to reschedule or cancel if needed. Your health is important to us.
+
+ChanRe Allergy Center`;
+  }
 };
 
 // Send SMS function with multi-provider support
@@ -276,8 +439,146 @@ export const sendAppointmentConfirmationSMS = async (appointment) => {
   }
 };
 
+// Send appointment rescheduled SMS
+export const sendAppointmentRescheduledSMS = async (appointment) => {
+  try {
+    if (!appointment.patientPhone) {
+      console.log('Patient phone number not available, skipping SMS');
+      return { success: false, error: 'No phone number' };
+    }
+
+    const message = smsTemplates.appointmentRescheduled(appointment);
+    const result = await sendSMS(appointment.patientPhone, message);
+    
+    if (result.success) {
+      console.log('Appointment rescheduled SMS sent to:', appointment.patientPhone);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error sending appointment rescheduled SMS:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Send appointment cancellation SMS
+export const sendAppointmentCancelledSMS = async (appointment) => {
+  try {
+    if (!appointment.patientPhone) {
+      console.log('Patient phone number not available, skipping SMS');
+      return { success: false, error: 'No phone number' };
+    }
+
+    const message = smsTemplates.appointmentCancelled(appointment);
+    const result = await sendSMS(appointment.patientPhone, message);
+    
+    if (result.success) {
+      console.log('Appointment cancellation SMS sent to:', appointment.patientPhone);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error sending appointment cancellation SMS:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Send appointment reminder SMS (day before)
+export const sendAppointmentReminderSMS = async (appointment) => {
+  try {
+    if (!appointment.patientPhone) {
+      console.log('Patient phone number not available, skipping SMS');
+      return { success: false, error: 'No phone number' };
+    }
+
+    const message = smsTemplates.appointmentReminder(appointment);
+    const result = await sendSMS(appointment.patientPhone, message);
+    
+    if (result.success) {
+      console.log('Appointment reminder SMS sent to:', appointment.patientPhone);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error sending appointment reminder SMS:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Send appointment rejected SMS
+export const sendAppointmentRejectedSMS = async (appointment) => {
+  try {
+    if (!appointment.patientPhone) {
+      console.log('Patient phone number not available, skipping SMS');
+      return { success: false, error: 'No phone number' };
+    }
+
+    const message = smsTemplates.appointmentRejected(appointment);
+    const result = await sendSMS(appointment.patientPhone, message);
+    
+    if (result.success) {
+      console.log('Appointment rejected SMS sent to:', appointment.patientPhone);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error sending appointment rejected SMS:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Send appointment completed SMS
+export const sendAppointmentCompletedSMS = async (appointment) => {
+  try {
+    if (!appointment.patientPhone) {
+      console.log('Patient phone number not available, skipping SMS');
+      return { success: false, error: 'No phone number' };
+    }
+
+    const message = smsTemplates.appointmentCompleted(appointment);
+    const result = await sendSMS(appointment.patientPhone, message);
+    
+    if (result.success) {
+      console.log('Appointment completed SMS sent to:', appointment.patientPhone);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error sending appointment completed SMS:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Send appointment no-show SMS
+export const sendAppointmentNoShowSMS = async (appointment) => {
+  try {
+    if (!appointment.patientPhone) {
+      console.log('Patient phone number not available, skipping SMS');
+      return { success: false, error: 'No phone number' };
+    }
+
+    const message = smsTemplates.appointmentNoShow(appointment);
+    const result = await sendSMS(appointment.patientPhone, message);
+    
+    if (result.success) {
+      console.log('Appointment no-show SMS sent to:', appointment.patientPhone);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error sending appointment no-show SMS:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 export default {
   sendSMS,
   sendAppointmentBookingSMS,
-  sendAppointmentConfirmationSMS
+  sendAppointmentConfirmationSMS,
+  sendAppointmentRescheduledSMS,
+  sendAppointmentCancelledSMS,
+  sendAppointmentReminderSMS,
+  sendAppointmentRejectedSMS,
+  sendAppointmentCompletedSMS,
+  sendAppointmentNoShowSMS
 };

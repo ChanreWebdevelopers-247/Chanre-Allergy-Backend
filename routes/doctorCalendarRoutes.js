@@ -6,11 +6,13 @@ import {
   getMonthRangeAvailability,
   markSundaysAsHolidays,
   bulkSetHolidays,
+  bulkSetAvailability,
   createAppointmentSlots,
   getAppointmentSlots,
   getDayAppointments,
   bookSlotForPatient,
-  deleteAppointmentSlots
+  deleteAppointmentSlots,
+  setDefaultWorkingHours
 } from '../controllers/doctorCalendarController.js';
 import { protect, ensureRole } from '../middleware/authMiddleware.js';
 
@@ -43,16 +45,23 @@ router.post('/availability', setDoctorAvailability);
 // Get doctor availability
 router.get('/availability', getDoctorAvailability);
 
+// Set default working hours for all days in a year
+router.post('/default-working-hours', setDefaultWorkingHours);
+
 // Mark all Sundays as holidays for a year
 router.post('/mark-sundays', markSundaysAsHolidays);
 
 // Bulk set holidays
 router.post('/bulk-holidays', bulkSetHolidays);
 
-// Create appointment slots
-router.post('/slots/create', createAppointmentSlots);
+// Bulk set availability (for available or unavailable dates)
+router.post('/bulk-availability', bulkSetAvailability);
 
-// Delete appointment slots
+// Create appointment slots (accessible by both centeradmin and receptionist)
+// Receptionists can create slots when availability times are set
+router.post('/slots/create', ensureRole('centeradmin', 'receptionist'), createAppointmentSlots);
+
+// Delete appointment slots (centeradmin only)
 router.delete('/slots', deleteAppointmentSlots);
 
 export default router;
