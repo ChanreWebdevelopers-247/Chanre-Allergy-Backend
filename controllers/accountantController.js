@@ -397,7 +397,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
     }
 
     const centerId = req.user.centerId;
-    const { startDate, endDate, billType, status, page = 1, limit = 50 } = req.query;
+    const { startDate, endDate, billType, status, consultationType, page = 1, limit = 50 } = req.query;
     
     console.log(`📋 Fetching bills for center: ${centerId}`);
 
@@ -477,6 +477,12 @@ export const getAllBillsAndTransactions = async (req, res) => {
           const invoiceNum = primaryBill.invoiceNumber || `INV-${patient.uhId}-${dateKey}`;
           const billDate = new Date(primaryBill.createdAt || patient.createdAt);
           
+          // Check if this is a superconsultant consultation
+          const isSuperconsultant = bills.some(bill => 
+            bill.consultationType && 
+            bill.consultationType.startsWith('superconsultant_')
+          );
+          
           // Create invoice with all services
           const invoice = {
             _id: primaryBill._id,
@@ -486,7 +492,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
             patientGender: patient.gender,
             patientContact: patient.contact,
             uhId: patient.uhId,
-            billType: 'Consultation',
+            billType: isSuperconsultant ? 'Superconsultant' : 'Consultation',
             billNo: primaryBill.billNo || invoiceNum,
             invoiceNumber: invoiceNum,
             date: billDate,
@@ -497,6 +503,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
             paidAmount: 0,
             balance: 0,
             discount: primaryBill.discount || 0,
+            discountAmount: 0, // Will be calculated from bills
             tax: primaryBill.tax || 0,
             paymentHistory: [],
             paymentMethod: primaryBill.paymentMethod,
@@ -505,7 +512,13 @@ export const getAllBillsAndTransactions = async (req, res) => {
             customData: primaryBill.customData,
             notes: primaryBill.notes,
             generatedBy: primaryBill.generatedBy,
-            generatedAt: primaryBill.createdAt
+            generatedAt: primaryBill.createdAt,
+            createdAt: primaryBill.createdAt,
+            // Cancellation fields
+            cancelledAt: null,
+            cancelledBy: null,
+            cancellationReason: null,
+            consultationType: primaryBill.consultationType || 'OP'
           };
           
           // Add all bills as service line items
@@ -526,10 +539,17 @@ export const getAllBillsAndTransactions = async (req, res) => {
             invoice.amount += bill.amount || 0;
             invoice.paidAmount += bill.paidAmount || 0;
             invoice.balance += (bill.amount || 0) - (bill.paidAmount || 0);
+            invoice.discountAmount += bill.discountAmount || 0;
             
             // Update status (worst case)
             if (bill.status === 'refunded') invoice.status = 'refunded';
-            else if (bill.status === 'cancelled' && invoice.status !== 'refunded') invoice.status = 'cancelled';
+            else if (bill.status === 'cancelled' && invoice.status !== 'refunded') {
+              invoice.status = 'cancelled';
+              // Set cancellation details from the latest cancelled bill
+              if (bill.cancelledAt) invoice.cancelledAt = bill.cancelledAt;
+              if (bill.cancelledBy) invoice.cancelledBy = bill.cancelledBy;
+              if (bill.cancellationReason) invoice.cancellationReason = bill.cancellationReason;
+            }
             else if (bill.status === 'pending' && !['refunded', 'cancelled'].includes(invoice.status)) invoice.status = 'pending';
             else if (bill.status === 'partially_paid' && !['refunded', 'cancelled', 'pending'].includes(invoice.status)) invoice.status = 'partially_paid';
             
@@ -546,7 +566,19 @@ export const getAllBillsAndTransactions = async (req, res) => {
           });
           
           // Apply filters
-          if (!billType || billType === 'consultation') {
+          // If billType is not specified, include all bills
+          // If billType is 'consultation', include only regular consultation bills (not superconsultant)
+          // If billType is 'superconsultant', include only superconsultant bills
+          const shouldInclude = !billType || 
+                               (billType === 'consultation' && !isSuperconsultant) ||
+                               (billType === 'superconsultant' && isSuperconsultant);
+          
+          // Filter by consultation type if specified
+          const matchesConsultationType = !consultationType || 
+                                         invoice.consultationType === consultationType ||
+                                         (consultationType === 'OP' && !invoice.consultationType);
+          
+          if (shouldInclude && matchesConsultationType) {
             if (!status || invoice.status === status) {
               invoiceMap.set(invoiceNum, invoice);
             }
@@ -746,6 +778,30 @@ export const getAllBillsAndTransactions = async (req, res) => {
     // Combine all bills (already complete invoice structures)
     const allInvoices = [...consultationBills, ...testBills];
 
+    // Populate user names for generatedBy and cancelledBy
+    const userIds = new Set();
+    allInvoices.forEach(inv => {
+      if (inv.generatedBy) userIds.add(inv.generatedBy.toString());
+      if (inv.cancelledBy) userIds.add(inv.cancelledBy.toString());
+    });
+    
+    const users = await User.find({ _id: { $in: Array.from(userIds) } }).select('name username');
+    const userMap = new Map();
+    users.forEach(user => {
+      userMap.set(user._id.toString(), user.name || user.username);
+    });
+    
+    // Add user names to invoices
+    allInvoices.forEach(inv => {
+      if (inv.generatedBy) {
+        inv.createdByName = userMap.get(inv.generatedBy.toString()) || 'N/A';
+      }
+      if (inv.cancelledBy) {
+        const cancelledById = typeof inv.cancelledBy === 'object' ? inv.cancelledBy.toString() : inv.cancelledBy.toString();
+        inv.cancelledByName = userMap.get(cancelledById) || 'N/A';
+      }
+    });
+
     // Sort by date (newest first)
     allInvoices.sort((a, b) => new Date(b.date) - new Date(a.date));
     
@@ -935,6 +991,8 @@ export const getFinancialReports = async (req, res) => {
     // Calculate consultation revenue and collect transactions
     let consultationRevenue = 0;
     let consultationCount = 0;
+    let superconsultantRevenue = 0;
+    let superconsultantCount = 0;
     let reassignmentRevenue = 0;
     let reassignmentCount = 0;
 
@@ -947,6 +1005,10 @@ export const getFinancialReports = async (req, res) => {
                                     (!dateFilter.$lte || billDate <= dateFilter.$lte));
           
           if (matchesDateFilter) {
+            // Check if this is a superconsultant consultation
+            const isSuperconsultant = bill.consultationType && 
+                                     bill.consultationType.startsWith('superconsultant_');
+            
             // Add to detailed transactions
             detailedTransactions.push({
               date: billDate,
@@ -955,7 +1017,7 @@ export const getFinancialReports = async (req, res) => {
               uhId: patient.uhId,
               age: patient.age,
               gender: patient.gender,
-              billType: 'Consultation',
+              billType: isSuperconsultant ? 'Superconsultant' : 'Consultation',
               service: bill.description || bill.type,
               doctor: patient.assignedDoctor?.name || 'N/A',
               amount: bill.amount || 0,
@@ -966,8 +1028,13 @@ export const getFinancialReports = async (req, res) => {
             });
             
             if (bill.status === 'paid' || bill.status === 'completed') {
-              consultationRevenue += bill.paidAmount || bill.amount || 0;
-              consultationCount++;
+              if (isSuperconsultant) {
+                superconsultantRevenue += bill.paidAmount || bill.amount || 0;
+                superconsultantCount++;
+              } else {
+                consultationRevenue += bill.paidAmount || bill.amount || 0;
+                consultationCount++;
+              }
             }
           }
         });
@@ -1041,8 +1108,8 @@ export const getFinancialReports = async (req, res) => {
     // Sort transactions by date
     detailedTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    const totalRevenue = consultationRevenue + reassignmentRevenue + labRevenue;
-    const totalTransactions = consultationCount + reassignmentCount + labCount;
+    const totalRevenue = consultationRevenue + superconsultantRevenue + reassignmentRevenue + labRevenue;
+    const totalTransactions = consultationCount + superconsultantCount + reassignmentCount + labCount;
 
     res.json({
       reportType,
@@ -1052,6 +1119,8 @@ export const getFinancialReports = async (req, res) => {
         totalTransactions,
         consultationRevenue,
         consultationCount,
+        superconsultantRevenue,
+        superconsultantCount,
         reassignmentRevenue,
         reassignmentCount,
         labRevenue,
@@ -1062,6 +1131,11 @@ export const getFinancialReports = async (req, res) => {
           revenue: consultationRevenue,
           count: consultationCount,
           percentage: totalRevenue > 0 ? ((consultationRevenue / totalRevenue) * 100).toFixed(2) : 0
+        },
+        superconsultant: {
+          revenue: superconsultantRevenue,
+          count: superconsultantCount,
+          percentage: totalRevenue > 0 ? ((superconsultantRevenue / totalRevenue) * 100).toFixed(2) : 0
         },
         reassignment: {
           revenue: reassignmentRevenue,
