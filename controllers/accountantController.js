@@ -486,36 +486,95 @@ export const getAllBillsAndTransactions = async (req, res) => {
           // Find creator user ID from any bill in the array (check all bills, not just primary)
           let creatorUserId = null;
           for (const bill of bills) {
+            // Log first bill structure for debugging
+            if (bill === bills[0]) {
+              console.log(`🔍 Checking bill structure for invoice ${invoiceNum}:`, {
+                hasGeneratedBy: !!bill.generatedBy,
+                hasCreatedBy: !!bill.createdBy,
+                hasUserId: !!bill.userId,
+                generatedBy: bill.generatedBy,
+                createdBy: bill.createdBy,
+                userId: bill.userId,
+                paymentHistoryCount: bill.paymentHistory?.length || 0,
+                billKeys: Object.keys(bill).slice(0, 20)
+              });
+            }
+            
             if (bill.generatedBy) {
               creatorUserId = bill.generatedBy;
+              console.log(`✅ Found creatorUserId from bill.generatedBy: ${creatorUserId}`);
               break;
             } else if (bill.createdBy) {
               creatorUserId = bill.createdBy;
+              console.log(`✅ Found creatorUserId from bill.createdBy: ${creatorUserId}`);
               break;
             } else if (bill.userId) {
               creatorUserId = bill.userId;
+              console.log(`✅ Found creatorUserId from bill.userId: ${creatorUserId}`);
               break;
             }
-            // Also check paymentHistory for creator
+            // Also check paymentHistory for creator - check all entries
             if (bill.paymentHistory && bill.paymentHistory.length > 0) {
-              const firstPayment = bill.paymentHistory[0];
-              if (firstPayment.processedBy) {
-                creatorUserId = firstPayment.processedBy;
-                break;
-              } else if (firstPayment.createdBy) {
-                creatorUserId = firstPayment.createdBy;
-                break;
+              console.log(`🔍 Checking paymentHistory for bill, found ${bill.paymentHistory.length} entries`);
+              for (const payment of bill.paymentHistory) {
+                if (payment.processedBy) {
+                  creatorUserId = payment.processedBy;
+                  console.log(`✅ Found creatorUserId from paymentHistory.processedBy: ${creatorUserId}`);
+                  break;
+                } else if (payment.createdBy) {
+                  creatorUserId = payment.createdBy;
+                  console.log(`✅ Found creatorUserId from paymentHistory.createdBy: ${creatorUserId}`);
+                  break;
+                }
               }
+              if (creatorUserId) break;
             }
           }
           // If still not found, try primaryBill with all possible fields
           if (!creatorUserId) {
             creatorUserId = primaryBill.generatedBy || primaryBill.createdBy || primaryBill.userId || null;
-            // Also check paymentHistory from primaryBill
+            console.log(`🔍 After checking all bills, creatorUserId: ${creatorUserId}`);
+            // Also check paymentHistory from primaryBill - check all entries
             if (!creatorUserId && primaryBill.paymentHistory && primaryBill.paymentHistory.length > 0) {
-              const firstPayment = primaryBill.paymentHistory[0];
-              creatorUserId = firstPayment.processedBy || firstPayment.createdBy || null;
+              console.log(`🔍 Checking primaryBill paymentHistory, found ${primaryBill.paymentHistory.length} entries`);
+              for (const payment of primaryBill.paymentHistory) {
+                if (payment.processedBy) {
+                  creatorUserId = payment.processedBy;
+                  console.log(`✅ Found creatorUserId from primaryBill paymentHistory.processedBy: ${creatorUserId}`);
+                  break;
+                } else if (payment.createdBy) {
+                  creatorUserId = payment.createdBy;
+                  console.log(`✅ Found creatorUserId from primaryBill paymentHistory.createdBy: ${creatorUserId}`);
+                  break;
+                }
+              }
             }
+          }
+          
+          // Log final result
+          if (!creatorUserId) {
+            console.log(`⚠️ No creatorUserId found for invoice ${invoiceNum} from bills or paymentHistory`);
+          } else {
+            console.log(`✅ Final creatorUserId for invoice ${invoiceNum}: ${creatorUserId}`);
+          }
+          
+          // Extract discount information from primary bill or first bill with discount
+          let totalDiscountAmount = 0;
+          let discountPercentage = 0;
+          let discountReason = '';
+          
+          // First, try to get discount from primary bill
+          if (primaryBill.discountAmount || primaryBill.discount) {
+            totalDiscountAmount = primaryBill.discountAmount || primaryBill.discount || 0;
+            discountPercentage = primaryBill.discountPercentage || 0;
+            discountReason = primaryBill.discountReason || '';
+          }
+          
+          // Also check customData for discount (for superconsultant)
+          if (!totalDiscountAmount && primaryBill.customData) {
+            totalDiscountAmount = primaryBill.customData.discountAmount || primaryBill.customData.discount || 0;
+            discountPercentage = primaryBill.customData.discountPercentage || discountPercentage || 0;
+            discountReason = primaryBill.customData.discountReason || primaryBill.customData.discountNotes || discountReason || '';
           }
           
           // Create invoice with all services
@@ -537,14 +596,21 @@ export const getAllBillsAndTransactions = async (req, res) => {
             amount: 0,
             paidAmount: 0,
             balance: 0,
-            discount: primaryBill.discount || 0,
-            discountAmount: 0, // Will be calculated from bills
+            discount: discountPercentage || 0,
+            discountAmount: totalDiscountAmount, // Will be accumulated from bills
+            discountPercentage: discountPercentage,
+            discountReason: discountReason,
             tax: primaryBill.tax || 0,
             paymentHistory: [],
             paymentMethod: primaryBill.paymentMethod,
             refunds: [],
             refundedAmount: 0,
-            customData: primaryBill.customData,
+            customData: {
+              ...primaryBill.customData,
+              discountAmount: totalDiscountAmount,
+              discountPercentage: discountPercentage,
+              discountReason: discountReason
+            },
             notes: primaryBill.notes,
             generatedBy: creatorUserId,
             generatedAt: primaryBill.createdAt,
@@ -574,7 +640,37 @@ export const getAllBillsAndTransactions = async (req, res) => {
             invoice.amount += bill.amount || 0;
             invoice.paidAmount += bill.paidAmount || 0;
             invoice.balance += (bill.amount || 0) - (bill.paidAmount || 0);
-            invoice.discountAmount += bill.discountAmount || 0;
+            
+            // Accumulate discountAmount from individual bills
+            const billDiscountAmount = bill.discountAmount || bill.discount || 0;
+            invoice.discountAmount += billDiscountAmount;
+            
+            // If discountPercentage is not set yet, try to get it from individual bills
+            if (!invoice.discountPercentage && bill.discountPercentage) {
+              invoice.discountPercentage = bill.discountPercentage;
+            }
+            
+            // If discountReason is not set yet, try to get it from individual bills
+            if (!invoice.discountReason && bill.discountReason) {
+              invoice.discountReason = bill.discountReason;
+            }
+            
+            // Also check customData from individual bills
+            if (bill.customData) {
+              // Accumulate discountAmount from customData
+              const customDiscountAmount = bill.customData.discountAmount || bill.customData.discount || 0;
+              invoice.discountAmount += customDiscountAmount;
+              
+              // If discountPercentage is not set yet, try to get it from customData
+              if (!invoice.discountPercentage && bill.customData.discountPercentage) {
+                invoice.discountPercentage = bill.customData.discountPercentage;
+              }
+              
+              // If discountReason is not set yet, try to get it from customData
+              if (!invoice.discountReason && bill.customData.discountReason) {
+                invoice.discountReason = bill.customData.discountReason || bill.customData.discountNotes || '';
+              }
+            }
             
             // Update status (worst case)
             if (bill.status === 'refunded') invoice.status = 'refunded';
@@ -643,6 +739,19 @@ export const getAllBillsAndTransactions = async (req, res) => {
             
             console.log(`🔍 Processing reassignment bill: ${invoiceNum} for patient ${patient.name}`);
             
+            // Extract discount information from reassignment billing
+            const reassignmentDiscountAmount = bill.discountAmount || 
+                                              bill.customData?.discountAmount || 
+                                              bill.customData?.discount || 
+                                              0;
+            const reassignmentDiscountPercentage = bill.discountPercentage || 
+                                                   bill.customData?.discountPercentage || 
+                                                   0;
+            const reassignmentDiscountReason = bill.discountReason || 
+                                              bill.customData?.discountReason || 
+                                              bill.customData?.discountNotes || 
+                                              '';
+            
             // Get or create invoice entry
             if (!invoiceMap.has(invoiceNum)) {
               console.log(`📝 Creating new invoice entry for reassignment: ${invoiceNum}`);
@@ -664,13 +773,21 @@ export const getAllBillsAndTransactions = async (req, res) => {
                 amount: bill.amount || 0,
                 paidAmount: bill.paidAmount || 0,
                 balance: (bill.amount || 0) - (bill.paidAmount || 0),
-                discount: bill.customData?.discountPercentage || 0,
+                discount: reassignmentDiscountPercentage || 0,
+                discountAmount: reassignmentDiscountAmount,
+                discountPercentage: reassignmentDiscountPercentage,
+                discountReason: reassignmentDiscountReason,
                 tax: bill.customData?.taxPercentage || 0,
                 paymentHistory: bill.paymentHistory || [],
                 paymentMethod: bill.paymentMethod,
                 refunds: bill.refunds || [],
                 refundedAmount: bill.refunds?.reduce((sum, r) => sum + (r.amount || 0), 0) || 0,
-                customData: bill.customData,
+                customData: {
+                  ...bill.customData,
+                  discountAmount: reassignmentDiscountAmount,
+                  discountPercentage: reassignmentDiscountPercentage,
+                  discountReason: reassignmentDiscountReason
+                },
                 notes: bill.notes,
                 generatedBy: bill.generatedBy,
                 generatedAt: bill.createdAt
@@ -754,6 +871,40 @@ export const getAllBillsAndTransactions = async (req, res) => {
             }
           }
 
+          // Extract discount information from TestRequest billing
+          let discountAmount = testReq.billing.discounts || 0;
+          
+          // Convert billing.items to services format
+          const services = (testReq.billing.items || []).map(item => ({
+            name: item.name || 'Test',
+            serviceName: item.name || 'Test',
+            quantity: item.quantity || 1,
+            charges: item.unitPrice || item.total || 0,
+            amount: item.total || (item.unitPrice || 0) * (item.quantity || 1),
+            unitPrice: item.unitPrice || 0
+          }));
+          
+          // Calculate services total from items (this is the subtotal before discount)
+          const servicesTotal = services.reduce((sum, service) => {
+            const serviceTotal = service.amount || (service.charges || service.unitPrice || 0) * (service.quantity || 1);
+            return sum + serviceTotal;
+          }, 0);
+          
+          // Use billing.subTotal if available, otherwise calculate from services
+          const subTotal = testReq.billing.subTotal || servicesTotal || testReq.billing.amount || 0;
+          const finalAmount = testReq.billing.amount || 0;
+          
+          // If discountAmount is 0 but servicesTotal > finalAmount, calculate implied discount
+          if (discountAmount === 0 && servicesTotal > finalAmount && finalAmount > 0 && servicesTotal > 0) {
+            discountAmount = servicesTotal - finalAmount;
+          }
+          
+          // Calculate discount percentage if discount exists
+          let discountPercentage = 0;
+          if (discountAmount > 0 && subTotal > 0) {
+            discountPercentage = (discountAmount / subTotal) * 100;
+          }
+          
           testBills.push({
             _id: testReq._id,
             patientId: patientIdValue,
@@ -761,14 +912,34 @@ export const getAllBillsAndTransactions = async (req, res) => {
             uhId: patientUhId,
             billType: 'Lab/Test',
             description: testReq.billing.description || 'Laboratory Test',
-            amount: testReq.billing.amount || 0,
+            amount: finalAmount, // Final amount after discount
             paidAmount: testReq.billing.paidAmount || 0,
-            balance: (testReq.billing.amount || 0) - (testReq.billing.paidAmount || 0),
+            balance: finalAmount - (testReq.billing.paidAmount || 0),
             status: testReq.billing.status || 'pending',
             paymentMethod: testReq.billing.paymentMethod,
             date: testReq.createdAt,
             doctor: testReq.doctorId?.name || testReq.doctorName || 'N/A',
-            invoiceNumber: testReq.billing.invoiceNumber || `${testReq._id}`
+            invoiceNumber: testReq.billing.invoiceNumber || `${testReq._id}`,
+            // Discount fields
+            discountAmount: discountAmount,
+            discount: discountAmount, // Alias for compatibility
+            discountPercentage: discountPercentage > 0 ? discountPercentage : null,
+            discountReason: testReq.billing.discountReason || testReq.billing.notes || '', // Use discountReason if available, otherwise notes
+            // Services array for discount calculation
+            services: services,
+            // CustomData for additional discount information
+            customData: {
+              subTotal: subTotal,
+              grandTotal: finalAmount,
+              discountAmount: discountAmount,
+              discountPercentage: discountPercentage > 0 ? discountPercentage : null,
+              discountReason: testReq.billing.discountReason || testReq.billing.notes || '', // Include discount reason in customData
+              servicesTotal: servicesTotal,
+              notes: testReq.billing.notes || ''
+            },
+            // User tracking
+            generatedBy: testReq.billing.generatedBy || null,
+            createdAt: testReq.createdAt
           });
         }
       }
@@ -848,13 +1019,16 @@ export const getAllBillsAndTransactions = async (req, res) => {
     // This ensures we get payment logs for invoices even if they're outside the date filter
     if (allInvoiceNumbers.size > 0) {
       try {
+        console.log(`🔍 Querying PaymentLogs for ${allInvoiceNumbers.size} invoice numbers:`, Array.from(allInvoiceNumbers).slice(0, 5));
         const additionalPaymentLogs = await PaymentLog.find({
           centerId,
           invoiceNumber: { $in: Array.from(allInvoiceNumbers) }
         })
           .populate('createdBy', 'name')
           .populate('processedBy', 'name')
-          .select('invoiceNumber createdBy processedBy');
+          .select('invoiceNumber createdBy processedBy transactionId');
+        
+        console.log(`📊 Found ${additionalPaymentLogs.length} PaymentLogs for invoices`);
         
         additionalPaymentLogs.forEach(log => {
           if (log.invoiceNumber && !invoiceCreatorMap.has(log.invoiceNumber)) {
@@ -867,16 +1041,125 @@ export const getAllBillsAndTransactions = async (req, res) => {
             if (creatorId) {
               invoiceCreatorMap.set(log.invoiceNumber, creatorId.toString());
               console.log(`✅ Additional mapping: invoice ${log.invoiceNumber} to creator ${creatorId.toString()}`);
+            } else {
+              console.log(`⚠️ PaymentLog found for ${log.invoiceNumber} but no creator ID`);
+            }
+          }
+        });
+        
+        // Also check if any invoices have transactionId that matches PaymentLogs
+        const transactionIds = new Set();
+        allInvoices.forEach(inv => {
+          if (inv.customData?.transactionId) {
+            transactionIds.add(inv.customData.transactionId);
+          }
+        });
+        
+        if (transactionIds.size > 0) {
+          console.log(`🔍 Also checking PaymentLogs by transactionId: ${transactionIds.size} transaction IDs`);
+          const transactionPaymentLogs = await PaymentLog.find({
+            centerId,
+            transactionId: { $in: Array.from(transactionIds) }
+          })
+            .populate('createdBy', 'name')
+            .populate('processedBy', 'name')
+            .select('invoiceNumber createdBy processedBy transactionId');
+          
+          transactionPaymentLogs.forEach(log => {
+            if (log.invoiceNumber && !invoiceCreatorMap.has(log.invoiceNumber)) {
+              let creatorId = null;
+              if (log.createdBy) {
+                creatorId = typeof log.createdBy === 'object' ? log.createdBy._id : log.createdBy;
+              } else if (log.processedBy) {
+                creatorId = typeof log.processedBy === 'object' ? log.processedBy._id : log.processedBy;
+              }
+              if (creatorId) {
+                invoiceCreatorMap.set(log.invoiceNumber, creatorId.toString());
+                console.log(`✅ Additional mapping via transactionId: invoice ${log.invoiceNumber} to creator ${creatorId.toString()}`);
+              }
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching additional payment logs:', err);
+      }
+    }
+    
+    // Update invoices with generatedBy from PaymentLogs if not already set
+    allInvoices.forEach(inv => {
+      if (!inv.generatedBy && !inv.createdBy && !inv.userId) {
+        const invoiceNumber = inv.invoiceNumber || inv.billNo;
+        if (invoiceNumber && invoiceCreatorMap.has(invoiceNumber)) {
+          const creatorId = invoiceCreatorMap.get(invoiceNumber);
+          inv.generatedBy = creatorId;
+          console.log(`✅ Set generatedBy from PaymentLog for invoice ${invoiceNumber}: ${creatorId}`);
+        } else {
+          // If still not found, try to query PaymentLogs by patientId and date as fallback
+          console.log(`⚠️ No PaymentLog found for invoice ${invoiceNumber}, trying patientId fallback...`);
+          // Note: This would require an async operation, so we'll handle it after the loop
+        }
+      }
+    });
+    
+    // Final fallback: Query PaymentLogs by patientId and date for invoices without generatedBy
+    const invoicesWithoutCreator = allInvoices.filter(inv => !inv.generatedBy && !inv.createdBy && !inv.userId);
+    if (invoicesWithoutCreator.length > 0) {
+      console.log(`🔍 Final fallback: Checking PaymentLogs for ${invoicesWithoutCreator.length} invoices without creator`);
+      try {
+        const patientIds = [...new Set(invoicesWithoutCreator.map(inv => inv.patientId.toString()))];
+        const fallbackPaymentLogs = await PaymentLog.find({
+          centerId,
+          patientId: { $in: patientIds }
+        })
+          .populate('createdBy', 'name')
+          .populate('processedBy', 'name')
+          .select('invoiceNumber createdBy processedBy patientId createdAt')
+          .sort({ createdAt: -1 });
+        
+        console.log(`📊 Found ${fallbackPaymentLogs.length} PaymentLogs for patient fallback`);
+        
+        // Try to match by invoice number and date proximity
+        invoicesWithoutCreator.forEach(inv => {
+          const invoiceDate = new Date(inv.date || inv.createdAt);
+          const matchingLogs = fallbackPaymentLogs.filter(log => {
+            const logDate = new Date(log.createdAt);
+            const dateDiff = Math.abs(invoiceDate - logDate);
+            const isSameDay = dateDiff < 24 * 60 * 60 * 1000; // Within 24 hours
+            const matchesPatient = log.patientId?.toString() === inv.patientId?.toString();
+            const matchesInvoice = log.invoiceNumber === inv.invoiceNumber || log.invoiceNumber === inv.billNo;
+            return matchesPatient && (matchesInvoice || isSameDay);
+          });
+          
+          if (matchingLogs.length > 0) {
+            const log = matchingLogs[0]; // Use first matching log
+            let creatorId = null;
+            if (log.createdBy) {
+              creatorId = typeof log.createdBy === 'object' ? log.createdBy._id : log.createdBy;
+            } else if (log.processedBy) {
+              creatorId = typeof log.processedBy === 'object' ? log.processedBy._id : log.processedBy;
+            }
+            if (creatorId) {
+              inv.generatedBy = creatorId.toString();
+              if (log.invoiceNumber) {
+                invoiceCreatorMap.set(log.invoiceNumber, creatorId.toString());
+              }
+              console.log(`✅ Fallback: Set generatedBy for invoice ${inv.invoiceNumber} from PaymentLog: ${creatorId.toString()}`);
             }
           }
         });
       } catch (err) {
-        console.error('Error fetching additional payment logs:', err);
+        console.error('Error in fallback PaymentLog query:', err);
       }
     }
 
     // Populate user names for generatedBy, cancelledBy, and refund users
     const userIds = new Set();
+    
+    // First, collect user IDs from invoiceCreatorMap (from PaymentLogs)
+    invoiceCreatorMap.forEach((creatorId) => {
+      userIds.add(creatorId.toString());
+    });
+    
     allInvoices.forEach(inv => {
       // Collect creator user IDs from multiple possible fields
       if (inv.generatedBy) userIds.add(inv.generatedBy.toString());
@@ -900,16 +1183,12 @@ export const getAllBillsAndTransactions = async (req, res) => {
       }
     });
     
-    // Collect additional user IDs from payment logs that weren't in invoices
+    // After fallback, collect any new generatedBy IDs that were set
     allInvoices.forEach(inv => {
-      const invoiceNumber = inv.invoiceNumber || inv.billNo;
-      if (invoiceNumber && invoiceCreatorMap.has(invoiceNumber)) {
-        const creatorId = invoiceCreatorMap.get(invoiceNumber);
-        if (!userIds.has(creatorId)) {
-          userIds.add(creatorId);
-        }
-      }
+      if (inv.generatedBy) userIds.add(inv.generatedBy.toString());
     });
+    
+    console.log(`📊 Total user IDs collected: ${userIds.size}`);
     
     const users = await User.find({ _id: { $in: Array.from(userIds) } }).select('name username');
     const userMap = new Map();
@@ -922,10 +1201,13 @@ export const getAllBillsAndTransactions = async (req, res) => {
       // Try to populate createdByName from generatedBy, createdBy, userId, or payment logs
       if (inv.generatedBy) {
         inv.createdByName = userMap.get(inv.generatedBy.toString()) || 'N/A';
+        inv.generatedByName = inv.createdByName; // Add alias
       } else if (inv.createdBy) {
         inv.createdByName = userMap.get(inv.createdBy.toString()) || 'N/A';
+        inv.generatedByName = inv.createdByName; // Add alias
       } else if (inv.userId) {
         inv.createdByName = userMap.get(inv.userId.toString()) || 'N/A';
+        inv.generatedByName = inv.createdByName; // Add alias
       } else {
         // Try to find creator from payment logs using invoice number
         const invoiceNumber = inv.invoiceNumber || inv.billNo;
@@ -939,6 +1221,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
           const creatorId = invoiceCreatorMap.get(invoiceNumber);
           inv.generatedBy = creatorId; // Set it for consistency
           inv.createdByName = userMap.get(creatorId) || 'N/A';
+          inv.generatedByName = inv.createdByName; // Add alias
           console.log(`✅ Found creator from PaymentLog: ${creatorId} -> ${inv.createdByName}`);
         } else {
           // Try to find creator from payment history
@@ -948,15 +1231,72 @@ export const getAllBillsAndTransactions = async (req, res) => {
             if (creatorId) {
               inv.generatedBy = creatorId.toString();
               inv.createdByName = userMap.get(creatorId.toString()) || 'N/A';
+              inv.generatedByName = inv.createdByName; // Add alias
               console.log(`✅ Found creator from payment history: ${creatorId} -> ${inv.createdByName}`);
             } else {
               inv.createdByName = 'N/A';
+              inv.generatedByName = 'N/A'; // Add alias
               console.log(`❌ No creator found in payment history`);
             }
           } else {
             // If no creator field found, set to N/A
             inv.createdByName = 'N/A';
+            inv.generatedByName = 'N/A'; // Add alias
             console.log(`❌ No payment history found for invoice ${invoiceNumber}`);
+          }
+        }
+      }
+      
+      // Add user names to paymentHistory array BEFORE we try to use them
+      if (inv.paymentHistory && Array.isArray(inv.paymentHistory)) {
+        inv.paymentHistory.forEach(payment => {
+          if (payment.processedBy) {
+            payment.processedByName = userMap.get(payment.processedBy.toString()) || 'N/A';
+          }
+          if (payment.createdBy) {
+            payment.createdByName = userMap.get(payment.createdBy.toString()) || 'N/A';
+          }
+        });
+        
+        // If createdByName is still 'N/A', try to get it from paymentHistory (after populating names)
+        if (inv.createdByName === 'N/A' && inv.paymentHistory.length > 0) {
+          // Check all payment history entries, not just first
+          for (const payment of inv.paymentHistory) {
+            if (payment.processedByName && payment.processedByName !== 'N/A') {
+              inv.createdByName = payment.processedByName;
+              inv.generatedByName = payment.processedByName;
+              inv.generatedBy = payment.processedBy; // Also set the ID for consistency
+              console.log(`✅ Found creator from paymentHistory (after populate): ${payment.processedByName} (ID: ${payment.processedBy})`);
+              break;
+            } else if (payment.createdByName && payment.createdByName !== 'N/A') {
+              inv.createdByName = payment.createdByName;
+              inv.generatedByName = payment.createdByName;
+              inv.generatedBy = payment.createdBy; // Also set the ID for consistency
+              console.log(`✅ Found creator from paymentHistory createdByName: ${payment.createdByName} (ID: ${payment.createdBy})`);
+              break;
+            } else if (payment.processedBy && !inv.generatedBy) {
+              // If we have an ID but no name in userMap, try to get name from userMap
+              const paymentUserId = payment.processedBy.toString();
+              const userName = userMap.get(paymentUserId);
+              if (userName && userName !== 'N/A') {
+                inv.createdByName = userName;
+                inv.generatedByName = userName;
+                inv.generatedBy = payment.processedBy;
+                console.log(`✅ Found creator from paymentHistory processedBy ID: ${userName} (ID: ${paymentUserId})`);
+                break;
+              }
+            } else if (payment.createdBy && !inv.generatedBy) {
+              // If we have an ID but no name in userMap, try to get name from userMap
+              const paymentUserId = payment.createdBy.toString();
+              const userName = userMap.get(paymentUserId);
+              if (userName && userName !== 'N/A') {
+                inv.createdByName = userName;
+                inv.generatedByName = userName;
+                inv.generatedBy = payment.createdBy;
+                console.log(`✅ Found creator from paymentHistory createdBy ID: ${userName} (ID: ${paymentUserId})`);
+                break;
+              }
+            }
           }
         }
       }
