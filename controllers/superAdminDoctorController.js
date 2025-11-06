@@ -72,6 +72,30 @@ export const getAllSuperAdminDoctors = async (req, res) => {
   }
 };
 
+export const getActiveSuperconsultants = async (req, res) => {
+  try {
+    const query = { status: 'active' };
+
+    if (req.query.search) {
+      const searchRegex = { $regex: req.query.search, $options: 'i' };
+      query.$or = [
+        { name: searchRegex },
+        { email: searchRegex },
+        { mobile: searchRegex },
+        { username: searchRegex }
+      ];
+    }
+
+    const doctors = await SuperAdminDoctor.find(query)
+      .select('name email mobile qualification designation specializations status createdAt updatedAt');
+
+    res.json({ success: true, doctors });
+  } catch (error) {
+    console.error('Error fetching active superconsultants:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch active superconsultants' });
+  }
+};
+
 export const addSuperAdminDoctor = async (req, res) => {
   try {
     // Debug logging

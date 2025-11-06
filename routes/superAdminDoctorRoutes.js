@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   getAllSuperAdminDoctors,
+  getActiveSuperconsultants,
   addSuperAdminDoctor,
   deleteSuperAdminDoctor,
   getSuperAdminDoctorById,
@@ -55,6 +56,9 @@ router.get('/working/test', protect, testFollowupAPI);
 router.get('/working/test-requests-for-review', protect, getTestRequestsForReview);
 router.post('/working/test-request/:testRequestId/review', protect, reviewTestRequest);
 router.get('/working/test-request-stats', protect, getTestRequestStats);
+
+// Public (authenticated) route to fetch active superconsultants for centers/receptionists
+router.get('/available', protect, getActiveSuperconsultants);
 
 // Management routes (for superadmin to manage superadmin consultants)
 router.use(protect);

@@ -4070,11 +4070,19 @@ export const processPayment = async (req, res) => {
       }
     }
 
+    const isSuperconsultantPayment = consultationType && consultationType.startsWith('superconsultant_');
+
     // Update appointment time if provided
     if (appointmentTime) {
       const appointmentDate = new Date(appointmentTime);
       patient.appointmentTime = appointmentDate;
       patient.appointmentStatus = 'scheduled';
+
+      if (isSuperconsultantPayment) {
+        patient.superConsultantAppointmentTime = appointmentDate;
+        patient.superConsultantAppointmentStatus = 'scheduled';
+        patient.superConsultantAppointmentNotes = notes || 'Superconsultant consultation scheduled after payment';
+      }
       
       // Also save to appointments array for consistency with reassignment billing
       if (!patient.appointments) {
@@ -4084,9 +4092,15 @@ export const processPayment = async (req, res) => {
       patient.appointments.push({
         doctorId: patient.assignedDoctor || null,
         scheduledAt: appointmentDate,
-        type: 'consultation',
+        appointmentTime: appointmentDate,
+        type: isSuperconsultantPayment ? 'superconsultant_consultation' : 'consultation',
+        appointmentType: isSuperconsultantPayment ? 'superconsultant_consultation' : 'consultation',
+        consultationType: consultationType || (isSuperconsultantPayment ? 'superconsultant_normal' : undefined),
         status: 'scheduled',
-        notes: `Appointment scheduled after payment for consultation`,
+        appointmentStatus: 'scheduled',
+        notes: isSuperconsultantPayment
+          ? (notes ? `Superconsultant consultation: ${notes}` : 'Superconsultant consultation scheduled after payment')
+          : (notes || 'Appointment scheduled after payment for consultation'),
         createdAt: new Date()
       });
       

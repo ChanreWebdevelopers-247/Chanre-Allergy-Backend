@@ -25,11 +25,11 @@ router.get('/dashboard', ensureRole('accountant'), getAccountantDashboard);
 // Stats route - accessible by center admins
 router.get('/stats', ensureRole('centeradmin'), getAccountantStats);
 
-// Bills and transactions - accessible by accountants
-router.get('/bills-transactions', ensureRole('accountant', 'centeradmin', 'superadmin'), getAllBillsAndTransactions);
+// Bills and transactions - accessible by accountants, center admins, superadmin, and receptionists who handle collections
+router.get('/bills-transactions', ensureRole('accountant', 'centeradmin', 'superadmin', 'receptionist'), getAllBillsAndTransactions);
 
 // Financial reports - accessible by accountants
-router.get('/reports', ensureRole('accountant', 'centeradmin', 'superadmin'), getFinancialReports);
+router.get('/reports', ensureRole('accountant', 'centeradmin', 'superadmin', 'receptionist'), getFinancialReports);
 
 // Get all accountants - accessible by superadmin, centeradmin, and accountants
 router.get('/', ensureRole('superadmin', 'centeradmin', 'accountant'), getAccountants);
