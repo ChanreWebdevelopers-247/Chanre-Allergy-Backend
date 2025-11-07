@@ -2,6 +2,7 @@ import TestRequest from '../models/TestRequest.js';
 import Patient from '../models/Patient.js';
 import Notification from '../models/Notification.js';
 import User from '../models/User.js';
+import SuperAdminDoctor from '../models/SuperAdminDoctor.js';
 import mongoose from 'mongoose';
 import PaymentLog from '../models/PaymentLog.js';
 import { 
@@ -4012,7 +4013,8 @@ export const processPayment = async (req, res) => {
       paymentType, 
       notes,
       appointmentTime,
-      consultationType
+      consultationType,
+      superConsultantId
     } = req.body;
 
     if (!patientId || !amount || !paymentMethod) {
@@ -4041,6 +4043,15 @@ export const processPayment = async (req, res) => {
     const paymentAmount = parseFloat(amount);
     let remainingAmount = paymentAmount;
 
+    let superConsultantDoc = null;
+    if (consultationType && consultationType.startsWith('superconsultant_') && superConsultantId) {
+      try {
+        superConsultantDoc = await SuperAdminDoctor.findById(superConsultantId).select('name email');
+      } catch (scError) {
+        console.warn('⚠️ Unable to fetch superconsultant doctor details:', scError?.message);
+      }
+    }
+
     // Process payment against billing items
     for (let bill of patient.billing) {
       if (remainingAmount <= 0) break;
@@ -4058,6 +4069,11 @@ export const processPayment = async (req, res) => {
         bill.paidBy = req.user.name || 'Receptionist';
         bill.paidAt = new Date();
         bill.paymentNotes = notes || '';
+        if (superConsultantDoc && bill.consultationType?.startsWith('superconsultant_')) {
+          bill.superConsultantDoctor = superConsultantDoc._id;
+          bill.superConsultantDoctorName = superConsultantDoc.name;
+          bill.doctorId = superConsultantDoc._id;
+        }
         
         // Update status
         if (bill.paidAmount >= billAmount) {
@@ -4082,6 +4098,10 @@ export const processPayment = async (req, res) => {
         patient.superConsultantAppointmentTime = appointmentDate;
         patient.superConsultantAppointmentStatus = 'scheduled';
         patient.superConsultantAppointmentNotes = notes || 'Superconsultant consultation scheduled after payment';
+        if (superConsultantDoc) {
+          patient.superConsultantDoctor = superConsultantDoc._id;
+          patient.superConsultantDoctorName = superConsultantDoc.name;
+        }
       }
       
       // Also save to appointments array for consistency with reassignment billing
@@ -4090,7 +4110,7 @@ export const processPayment = async (req, res) => {
       }
       
       patient.appointments.push({
-        doctorId: patient.assignedDoctor || null,
+        doctorId: (superConsultantDoc && superConsultantDoc._id) || patient.assignedDoctor || null,
         scheduledAt: appointmentDate,
         appointmentTime: appointmentDate,
         type: isSuperconsultantPayment ? 'superconsultant_consultation' : 'consultation',
@@ -4101,6 +4121,7 @@ export const processPayment = async (req, res) => {
         notes: isSuperconsultantPayment
           ? (notes ? `Superconsultant consultation: ${notes}` : 'Superconsultant consultation scheduled after payment')
           : (notes || 'Appointment scheduled after payment for consultation'),
+        doctorName: superConsultantDoc?.name || undefined,
         createdAt: new Date()
       });
       
@@ -4155,6 +4176,17 @@ export const processPayment = async (req, res) => {
       if (!patient.consultationType || patient.consultationType === '') {
         patient.consultationType = 'OP';
       }
+    }
+
+    if (superConsultantDoc && isSuperconsultantPayment) {
+      // Ensure billing records without explicit association are linked
+      patient.billing.forEach((bill) => {
+        if (bill?.consultationType?.startsWith('superconsultant_')) {
+          bill.superConsultantDoctor = superConsultantDoc._id;
+          bill.superConsultantDoctorName = superConsultantDoc.name;
+          bill.doctorId = superConsultantDoc._id;
+        }
+      });
     }
 
     // Save patient

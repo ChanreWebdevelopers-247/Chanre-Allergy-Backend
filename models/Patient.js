@@ -103,6 +103,10 @@ const billingSchema = new mongoose.Schema({
   discountPercentage: { type: Number, default: 0 },
   discountAmount: { type: Number, default: 0 },
   discountReason: { type: String, default: '' },
+
+  // Superconsultant tracking
+  superConsultantDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'SuperAdminDoctor' },
+  superConsultantDoctorName: { type: String },
   
   createdAt: { type: Date, default: Date.now }
 });
@@ -162,6 +166,8 @@ const patientSchema = new mongoose.Schema({
   },
   assignedDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   currentDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Current doctor (for reassigned patients)
+  superConsultantDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'SuperAdminDoctor' },
+  superConsultantDoctorName: { type: String },
   isReassigned: { type: Boolean, default: false }, // Flag to indicate if patient has been reassigned
   assignedAt: { type: Date }, // Track when patient was assigned to doctor
   viewedByDoctor: { type: Boolean, default: false }, // Track if doctor has viewed this patient

@@ -93,8 +93,13 @@ export const ensureCenterIsolation = (req, res, next) => {
     return next();
   }
   
-  // Lab staff can access lab-related endpoints
+  // Lab staff (legacy userType) can access lab-related endpoints
   if (req.user && req.user.userType === 'LabStaff') {
+    return next();
+  }
+
+  // SLIT lab staff role should have read access even without center assignment
+  if (req.user && req.user.role === 'slitlab') {
     return next();
   }
   
@@ -199,6 +204,18 @@ export const ensureCenterStaffOrDoctor = (req, res, next) => {
   )) {
     console.log('✅ ensureCenterStaffOrDoctor access granted for role:', req.user.role);
     return next();
+  }
+
+  // Allow SLIT lab staff to view (GET) patient data but prevent modifications
+  if (req.user?.role === 'slitlab') {
+    if (req.method && req.method.toUpperCase() === 'GET') {
+      console.log('✅ ensureCenterStaffOrDoctor read-only access granted for slitlab role');
+      return next();
+    }
+    console.log('❌ ensureCenterStaffOrDoctor write access denied for slitlab role');
+    return res.status(403).json({
+      message: 'SLIT lab staff can only view patient information.'
+    });
   }
   
   console.log('❌ ensureCenterStaffOrDoctor access denied for role:', req.user?.role);

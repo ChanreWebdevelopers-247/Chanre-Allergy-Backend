@@ -13,6 +13,77 @@ import AllergicBronchitis from '../models/AllergicBronchitis.js';
 import AtopicDermatitis from '../models/AtopicDermatitis.js';
 import Notification from '../models/Notification.js';
 import History from '../models/historyModel.js';
+import mongoose from 'mongoose';
+
+const SUPER_CONSULTANT_TYPES = ['superconsultant_normal', 'superconsultant_audio', 'superconsultant_video', 'superconsultant_review_reports'];
+
+const matchesDoctorReference = (candidate, docIdString, docName) => {
+  if (!candidate) return false;
+
+  if (candidate instanceof mongoose.Types.ObjectId) {
+    return candidate.toString() === docIdString;
+  }
+
+  if (typeof candidate === 'string') {
+    return docIdString ? candidate === docIdString : candidate === docName;
+  }
+
+  if (candidate._id) {
+    return candidate._id.toString() === docIdString;
+  }
+
+  if (candidate.id) {
+    return candidate.id.toString() === docIdString;
+  }
+
+  if (candidate.name && docName) {
+    return candidate.name === docName;
+  }
+
+  return false;
+};
+
+const isPatientLinkedToSuperConsultant = (patient, user) => {
+  if (!patient || !user) return false;
+
+  const docIdString = user._id?.toString?.() || user.id?.toString?.();
+  const docName = user.name;
+
+  if (matchesDoctorReference(patient.superConsultantDoctor, docIdString, docName)) {
+    return true;
+  }
+
+  if (matchesDoctorReference(patient.superConsultantDoctorName, docIdString, docName)) {
+    return true;
+  }
+
+  if (Array.isArray(patient.appointments)) {
+    for (const appointment of patient.appointments) {
+      if (
+        matchesDoctorReference(appointment?.doctorId, docIdString, docName) ||
+        matchesDoctorReference(appointment?.doctorName, docIdString, docName)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  if (Array.isArray(patient.billing)) {
+    for (const bill of patient.billing) {
+      if (!bill?.consultationType?.startsWith?.('superconsultant_')) continue;
+      if (
+        matchesDoctorReference(bill.superConsultantDoctor, docIdString, docName) ||
+        matchesDoctorReference(bill.superConsultantDoctorName, docIdString, docName) ||
+        matchesDoctorReference(bill.doctorId, docIdString, docName) ||
+        matchesDoctorReference(bill.assignedDoctor, docIdString, docName)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+};
 
 // Management functions for superadmin to manage superadmin consultants
 export const getAllSuperAdminDoctors = async (req, res) => {
@@ -307,10 +378,57 @@ export const getSuperAdminDoctorStats = async (req, res) => {
 // Working functions for superadmin consultants to perform their duties
 export const getSuperAdminDoctorAssignedPatients = async (req, res) => {
   try {
-    const patients = await Patient.find({ assignedDoctor: req.user.id })
+    const userId = req.user?._id || req.user?.id;
+    const docIdString = userId?.toString?.();
+    const objectId = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null;
+
+    const matchConditions = [];
+
+    if (objectId) {
+      matchConditions.push({ superConsultantDoctor: objectId });
+      matchConditions.push({ 'billing.superConsultantDoctor': objectId });
+      matchConditions.push({ 'billing.doctorId': objectId });
+      matchConditions.push({ 'appointments.doctorId': objectId });
+    }
+
+    if (docIdString) {
+      matchConditions.push({ superConsultantDoctor: docIdString });
+      matchConditions.push({ 'billing.superConsultantDoctor': docIdString });
+      matchConditions.push({ 'billing.doctorId': docIdString });
+      matchConditions.push({ 'appointments.doctorId': docIdString });
+    }
+
+    if (req.user?.name) {
+      matchConditions.push({ superConsultantDoctorName: req.user.name });
+      matchConditions.push({ 'billing.superConsultantDoctorName': req.user.name });
+      matchConditions.push({ 'appointments.doctorName': req.user.name });
+    }
+
+    const query = matchConditions.length > 0
+      ? { $or: matchConditions }
+      : { superConsultantDoctor: null }; // fallback to empty result
+
+    let patients = await Patient.find(query)
       .populate('centerId', 'name code')
-      .populate('assignedDoctor', 'name email');
-    res.json(patients);
+      .populate('assignedDoctor', 'name email')
+      .populate('superConsultantDoctor', 'name email')
+      .sort({ superConsultantAppointmentTime: -1, appointmentTime: -1, updatedAt: -1 });
+
+    const filteredPatients = patients.filter((patient) =>
+      isPatientLinkedToSuperConsultant(patient, req.user)
+    );
+
+    const unique = [];
+    const seen = new Set();
+    for (const patient of filteredPatients) {
+      const key = patient._id.toString();
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(patient);
+      }
+    }
+
+    res.json(unique);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching assigned patients', error: error.message });
   }
@@ -561,38 +679,39 @@ export const getSuperAdminDoctorLabReports = async (req, res) => {
 
     // Get all matching test requests first (must have completed lab tests)
     const allTestRequests = await TestRequest.find(query)
-      .populate('patientId', 'name age gender phone billing consultationType')
+      .populate('patientId', 'name age gender phone billing consultationType superConsultantDoctor superConsultantDoctorName appointments')
       .sort({ updatedAt: -1 });
 
     // ✅ FILTER: Only include reports for patients who have paid superconsultant billing
     const filteredReports = [];
     for (const testRequest of allTestRequests) {
       const patient = testRequest.patientId;
-      if (!patient) continue; // Skip if patient not found
-      
-      // Get fresh patient data with billing
-      const freshPatient = await Patient.findById(patient._id || patient);
+      if (!patient) continue;
+
+      const freshPatient = await Patient.findById(patient._id || patient)
+        .populate('superConsultantDoctor', 'name email');
       if (!freshPatient || !freshPatient.billing || freshPatient.billing.length === 0) {
-        continue; // No billing = no superconsultant payment
+        continue;
       }
 
-      // Check if patient has superconsultant consultation billing that is paid
-               const superconsultantBill = freshPatient.billing.find(bill =>
-                 bill.type === 'consultation' &&
-                 (bill.consultationType === 'superconsultant_normal' ||
-                  bill.consultationType === 'superconsultant_audio' ||
-                  bill.consultationType === 'superconsultant_video' ||
-                  bill.consultationType === 'superconsultant_review_reports')
-               );
+      if (!isPatientLinkedToSuperConsultant(freshPatient, req.user)) {
+        continue;
+      }
 
-      // Must have superconsultant billing AND it must be paid AND not cancelled
+      const superconsultantBill = freshPatient.billing.find(bill =>
+        bill.type === 'consultation' &&
+        (bill.consultationType === 'superconsultant_normal' ||
+         bill.consultationType === 'superconsultant_audio' ||
+         bill.consultationType === 'superconsultant_video' ||
+         bill.consultationType === 'superconsultant_review_reports')
+      );
+
       if (!superconsultantBill) {
-        continue; // No superconsultant billing - skip this report
+        continue;
       }
-      
-      // Skip if bill is cancelled
+
       if (superconsultantBill.status === 'cancelled') {
-        continue; // Bill is cancelled - skip this report
+        continue;
       }
 
       const totalAmount = superconsultantBill.amount || 0;
@@ -600,7 +719,7 @@ export const getSuperAdminDoctorLabReports = async (req, res) => {
       const isPaid = paidAmount >= totalAmount && totalAmount > 0;
 
       if (isPaid) {
-        filteredReports.push(testRequest); // Only include if superconsultant billing is fully paid
+        filteredReports.push(testRequest);
       }
     }
 
@@ -963,78 +1082,60 @@ export const sendFeedbackToCenterDoctor = async (req, res) => {
 // ✅ UPDATED: Only show patients who have paid superconsultant billing
 export const getSuperAdminDoctorPatients = async (req, res) => {
   try {
-    // Get current date (start and end of day for filtering)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    // First, get all test requests with completed status
-    const completedTestRequests = await TestRequest.find({
-      status: { $in: ['Report_Generated', 'Report_Sent', 'Completed'] }
-    }).select('patientId');
-    
-    // Extract unique patient IDs from completed test requests
-    const patientIds = [...new Set(completedTestRequests.map(tr => tr.patientId))];
-    
-    // Get all patients who have completed lab reports
-    const allPatients = await Patient.find({ _id: { $in: patientIds } })
+    const userId = req.user?._id || req.user?.id;
+    const docIdString = userId?.toString?.();
+    const objectId = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null;
+
+    const matchConditions = [];
+
+    if (objectId) {
+      matchConditions.push({ superConsultantDoctor: objectId });
+      matchConditions.push({ 'billing.superConsultantDoctor': objectId });
+      matchConditions.push({ 'billing.doctorId': objectId });
+      matchConditions.push({ 'appointments.doctorId': objectId });
+    }
+
+    if (docIdString) {
+      matchConditions.push({ superConsultantDoctor: docIdString });
+      matchConditions.push({ 'billing.superConsultantDoctor': docIdString });
+      matchConditions.push({ 'billing.doctorId': docIdString });
+      matchConditions.push({ 'appointments.doctorId': docIdString });
+    }
+
+    if (req.user?.name) {
+      matchConditions.push({ superConsultantDoctorName: req.user.name });
+      matchConditions.push({ 'billing.superConsultantDoctorName': req.user.name });
+      matchConditions.push({ 'appointments.doctorName': req.user.name });
+    }
+
+    const query = matchConditions.length > 0
+      ? { $or: matchConditions }
+      : { superConsultantDoctor: null }; // fallback to empty result
+
+    let patients = await Patient.find(query)
       .populate('centerId', 'name code')
-      .populate('assignedDoctor', 'name')
-      .sort({ createdAt: -1 });
+      .populate('assignedDoctor', 'name email')
+      .populate('superConsultantDoctor', 'name email')
+      .sort({ superConsultantAppointmentTime: -1, appointmentTime: -1, updatedAt: -1 });
 
-    // ✅ FILTER: Only include patients who have paid superconsultant billing AND appointment date is today
-    const patients = [];
-    for (const patient of allPatients) {
-      if (!patient.billing || patient.billing.length === 0) {
-        continue; // No billing = no superconsultant payment
-      }
+    const filteredPatients = patients.filter((patient) =>
+      isPatientLinkedToSuperConsultant(patient, req.user)
+    );
 
-      // Check if patient has superconsultant consultation billing that is paid
-      const superconsultantBill = patient.billing.find(bill => 
-        bill.type === 'consultation' && 
-        (bill.consultationType === 'superconsultant_normal' || 
-         bill.consultationType === 'superconsultant_audio' || 
-         bill.consultationType === 'superconsultant_video' ||
-         bill.consultationType === 'superconsultant_review_reports')
-      );
-
-      // Must have superconsultant billing AND it must be paid AND not cancelled
-      if (!superconsultantBill) {
-        continue; // No superconsultant billing - skip this patient
-      }
-
-      // Skip if bill is cancelled
-      if (superconsultantBill.status === 'cancelled') {
-        continue; // Bill is cancelled - skip this patient
-      }
-
-      const totalAmount = superconsultantBill.amount || 0;
-      const paidAmount = superconsultantBill.paidAmount || 0;
-      const isPaid = paidAmount >= totalAmount && totalAmount > 0;
-
-      if (!isPaid) {
-        continue; // Not fully paid - skip this patient
-      }
-
-      // ✅ FILTER BY APPOINTMENT DATE: Only show patients whose appointment is scheduled for today
-      if (patient.appointmentTime) {
-        const appointmentDate = new Date(patient.appointmentTime);
-        appointmentDate.setHours(0, 0, 0, 0);
-        
-        // Only include if appointment date is today
-        if (appointmentDate.getTime() === today.getTime()) {
-          patients.push(patient);
-        }
-      } else {
-        // If no appointment time is set, don't show the patient (they need an appointment)
-        continue;
+    const unique = [];
+    const seen = new Set();
+    for (const patient of filteredPatients) {
+      const key = patient._id.toString();
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(patient);
       }
     }
 
     res.json({
-      patients,
-      count: patients.length
+      success: true,
+      patients: unique,
+      count: unique.length
     });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching patients', error: error.message });
@@ -1300,77 +1401,54 @@ export const getTestRequestsForReview = async (req, res) => {
 
     // Get all matching test requests first
     const allTestRequests = await TestRequest.find(query)
-      .populate('doctorId', 'name email phone')
-      .populate('patientId', 'name age gender phone address')
-      .populate('centerId', 'name code')
-      .sort({ createdAt: -1 });
+      .populate('patientId', 'name age gender phone billing consultationType superConsultantDoctor superConsultantDoctorName appointments')
+      .sort({ updatedAt: -1 });
 
     // ✅ FILTER: Only include test requests for patients who have paid superconsultant billing
-    const filteredRequests = [];
+    const filteredReports = [];
     for (const testRequest of allTestRequests) {
       const patient = testRequest.patientId;
-      if (!patient || typeof patient === 'string') {
-        // If patient is just an ID, fetch it
-        const patientDoc = await Patient.findById(patient || testRequest.patientId);
-        if (!patientDoc || !patientDoc.billing || patientDoc.billing.length === 0) {
-          continue; // No billing = no superconsultant payment
-        }
+      if (!patient) continue;
 
-        // Check if patient has superconsultant consultation billing that is paid
-        const superconsultantBill = patientDoc.billing.find(bill => 
-          bill.type === 'consultation' && 
-          (bill.consultationType === 'superconsultant_normal' || 
-           bill.consultationType === 'superconsultant_audio' || 
-           bill.consultationType === 'superconsultant_video' ||
-           bill.consultationType === 'superconsultant_review_reports')
-        );
+      const freshPatient = await Patient.findById(patient._id || patient)
+        .populate('superConsultantDoctor', 'name email');
+      if (!freshPatient || !freshPatient.billing || freshPatient.billing.length === 0) {
+        continue;
+      }
 
-        if (!superconsultantBill) continue;
-        
-        // Skip if bill is cancelled
-        if (superconsultantBill.status === 'cancelled') continue;
+      if (!isPatientLinkedToSuperConsultant(freshPatient, req.user)) {
+        continue;
+      }
 
-        const totalAmount = superconsultantBill.amount || 0;
-        const paidAmount = superconsultantBill.paidAmount || 0;
-        const isPaid = paidAmount >= totalAmount && totalAmount > 0;
+      const superconsultantBill = freshPatient.billing.find(bill =>
+        bill.type === 'consultation' &&
+        (bill.consultationType === 'superconsultant_normal' ||
+         bill.consultationType === 'superconsultant_audio' ||
+         bill.consultationType === 'superconsultant_video' ||
+         bill.consultationType === 'superconsultant_review_reports')
+      );
 
-        if (isPaid) {
-          filteredRequests.push(testRequest);
-        }
-      } else {
-        // Patient is already populated
-        if (!patient.billing || patient.billing.length === 0) {
-          continue; // No billing = no superconsultant payment
-        }
+      if (!superconsultantBill) {
+        continue;
+      }
 
-        // Check if patient has superconsultant consultation billing that is paid
-        const superconsultantBill = patient.billing.find(bill => 
-          bill.type === 'consultation' && 
-          (bill.consultationType === 'superconsultant_normal' || 
-           bill.consultationType === 'superconsultant_audio' || 
-           bill.consultationType === 'superconsultant_video' ||
-           bill.consultationType === 'superconsultant_review_reports')
-        );
+      if (superconsultantBill.status === 'cancelled') {
+        continue;
+      }
 
-        if (!superconsultantBill) continue;
-        
-        // Skip if bill is cancelled
-        if (superconsultantBill.status === 'cancelled') continue;
+      const totalAmount = superconsultantBill.amount || 0;
+      const paidAmount = superconsultantBill.paidAmount || 0;
+      const isPaid = paidAmount >= totalAmount && totalAmount > 0;
 
-        const totalAmount = superconsultantBill.amount || 0;
-        const paidAmount = superconsultantBill.paidAmount || 0;
-        const isPaid = paidAmount >= totalAmount && totalAmount > 0;
-
-        if (isPaid) {
-          filteredRequests.push(testRequest);
-        }
+      if (isPaid) {
+        filteredReports.push(testRequest);
       }
     }
 
     // Apply pagination to filtered results
-    const total = filteredRequests.length;
+    const total = filteredReports.length;
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const testRequests = filteredRequests.slice(skip, skip + parseInt(limit));
+    const testRequests = filteredReports.slice(skip, skip + parseInt(limit));
 
     const totalPages = Math.ceil(total / parseInt(limit));
 

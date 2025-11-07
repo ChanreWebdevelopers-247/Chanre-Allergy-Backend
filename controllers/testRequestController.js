@@ -1559,7 +1559,7 @@ export const checkReportStatus = async (req, res) => {
       const isPaymentComplete = remainingBalance <= 0;
       
       // ✅ NEW: Allow Lab Staff to access reports they generate regardless of payment status
-      const isLabStaff = req.user?.role === 'lab_staff' || req.user?.userType === 'lab_staff';
+      const isLabStaff = ['lab_staff', 'LabStaff', 'slitlab'].includes(req.user?.role) || ['lab_staff', 'LabStaff'].includes(req.user?.userType);
       
       // ✅ FIXED: Only block access if tests are not completed AND payment is not complete (unless Lab Staff)
       // This allows access if either tests are completed OR payment is complete
@@ -1712,7 +1712,7 @@ export const downloadTestReport = async (req, res) => {
       const isPaymentComplete = remainingBalance <= 0;
       
       // ✅ NEW: Allow Lab Staff to access reports they generate regardless of payment status
-      const isLabStaff = req.user?.role === 'lab_staff' || req.user?.userType === 'lab_staff';
+      const isLabStaff = ['lab_staff', 'LabStaff', 'slitlab'].includes(req.user?.role) || ['lab_staff', 'LabStaff'].includes(req.user?.userType);
       
       // ✅ FIXED: Only block access if tests are not completed AND payment is not complete (unless Lab Staff)
       // This allows access if either tests are completed OR payment is complete
