@@ -1248,6 +1248,92 @@ export const bookSlotForPatient = async (req, res) => {
   }
 };
 
+// Cancel a booked slot and make it available again
+export const cancelBookedSlot = async (req, res) => {
+  try {
+    const { slotId, cancellationReason } = req.body;
+    const centerId = req.user.centerId;
+
+    if (!slotId) {
+      return res.status(400).json({
+        message: 'Slot ID is required'
+      });
+    }
+
+    if (!centerId) {
+      return res.status(400).json({
+        message: 'Center ID is required'
+      });
+    }
+
+    const slot = await AppointmentSlot.findOne({
+      _id: slotId,
+      centerId
+    });
+
+    if (!slot) {
+      return res.status(404).json({
+        message: 'Slot not found'
+      });
+    }
+
+    if (!slot.isBooked) {
+      return res.status(400).json({
+        message: 'Slot is not currently booked'
+      });
+    }
+
+    const linkedAppointmentId = slot.patientAppointmentId;
+
+    slot.isBooked = false;
+    slot.patientId = null;
+    slot.patientAppointmentId = null;
+    slot.bookedBy = null;
+    slot.bookedAt = null;
+    slot.status = 'available';
+
+    if (cancellationReason) {
+      const timestamp = new Date().toISOString();
+      slot.notes = slot.notes && slot.notes.trim().length > 0
+        ? `${slot.notes}\nCancelled on ${timestamp}: ${cancellationReason}`
+        : `Cancelled on ${timestamp}: ${cancellationReason}`;
+    }
+
+    await slot.save();
+
+    if (linkedAppointmentId) {
+      try {
+        const appointment = await PatientAppointment.findById(linkedAppointmentId);
+        if (appointment) {
+          appointment.status = 'cancelled';
+          appointment.cancelledAt = new Date();
+          if (cancellationReason) {
+            appointment.cancellationReason = cancellationReason;
+          } else if (!appointment.cancellationReason) {
+            appointment.cancellationReason = 'Cancelled via slot management';
+          }
+          await appointment.save();
+        }
+      } catch (appointmentError) {
+        console.error('Error updating linked appointment during slot cancellation:', appointmentError);
+        // Continue even if appointment update fails
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Slot booking cancelled successfully',
+      slot
+    });
+  } catch (error) {
+    console.error('Error cancelling slot booking:', error);
+    res.status(500).json({
+      message: 'Error cancelling slot booking',
+      error: error.message
+    });
+  }
+};
+
 // Delete appointment slots for a doctor on a date
 export const deleteAppointmentSlots = async (req, res) => {
   try {

@@ -28,10 +28,17 @@ class ReassignmentBillingController {
         centerId,
         consultationType = 'OP',
         consultationFee = 850,
+        registrationFee = 0,
         serviceCharges = [],
         taxPercentage = 0,
         discountPercentage = 0,
+        discountAmount: discountAmountFromRequest = 0,
+        discountReason = '',
+        customDiscountReason = '',
+        discountType = 'percentage',
         notes = '',
+        totals: totalsFromRequest = null,
+        rounding: roundingFromRequest = null,
         isReassignedEntry = true
       } = req.body;
 
@@ -77,60 +84,169 @@ class ReassignmentBillingController {
         consultationFee,
         consultationType,
         serviceCharges,
-        serviceChargesLength: serviceCharges?.length
+        serviceChargesLength: serviceCharges?.length,
+        registrationFee,
+        discountPercentage,
+        discountAmountFromRequest,
+        discountReason,
+        customDiscountReason,
+        discountType,
+        totalsFromRequest,
+        roundingFromRequest
       });
       
-      // Use the consultation fee from the frontend directly
-      // The frontend already determines the correct fee based on eligibility
-      let finalConsultationFee = consultationFee;
+      // Normalize monetary values
+      const registrationFeeValue = parseFloat(registrationFee) || 0;
+      let finalConsultationFee = parseFloat(consultationFee) || 0;
+
+      // Sanitize service charges
+      const sanitizedServiceCharges = (serviceCharges || [])
+        .filter(service => {
+          if (!service) return false;
+          const name = typeof service.name === 'string' ? service.name.trim() : '';
+          const amount = parseFloat(service.amount);
+          return Boolean(name) && !Number.isNaN(amount) && amount !== 0;
+        })
+        .map(service => ({
+          name: service.name.trim(),
+          amount: parseFloat(service.amount),
+          description: service.description || ''
+        }));
 
       // Calculate service charges total
-      const serviceTotal = serviceCharges.reduce((sum, service) => 
+      const serviceTotal = sanitizedServiceCharges.reduce((sum, service) => 
         sum + (parseFloat(service.amount) || 0), 0
       );
+      
+      // Calculate subtotal including registration fee
+      const subtotalBase = registrationFeeValue + finalConsultationFee + serviceTotal;
+      const taxRate = parseFloat(taxPercentage) || 0;
+      const computedTaxAmount = (subtotalBase * taxRate) / 100;
+      const rawDiscountAmount = discountType === 'amount'
+        ? parseFloat(discountAmountFromRequest) || 0
+        : subtotalBase * ((parseFloat(discountPercentage) || 0) / 100);
+      const computedDiscountAmount = Math.min(subtotalBase + computedTaxAmount, Math.max(0, rawDiscountAmount));
+      const computedRawTotal = subtotalBase + computedTaxAmount - computedDiscountAmount;
+      
+      const roundingInfo = (roundingFromRequest && typeof roundingFromRequest === 'object')
+        ? {
+            rawTotal: Number(roundingFromRequest.rawTotal ?? computedRawTotal),
+            roundedTotal: Number(roundingFromRequest.roundedTotal ?? computedRawTotal),
+            roundingDifference: Number(roundingFromRequest.roundingDifference ?? 0)
+          }
+        : {
+            rawTotal: computedRawTotal,
+            roundedTotal: computedRawTotal,
+            roundingDifference: 0
+          };
+      
+      const totalsOverride = (totalsFromRequest && typeof totalsFromRequest === 'object') ? totalsFromRequest : {};
+      const finalTotals = {
+        subtotal: Number(totalsOverride.subtotal ?? subtotalBase),
+        taxAmount: Number(totalsOverride.taxAmount ?? computedTaxAmount),
+        discountAmount: Number(totalsOverride.discountAmount ?? computedDiscountAmount),
+        roundOffAmount: Number(totalsOverride.roundOffAmount ?? roundingInfo.roundingDifference ?? 0),
+        total: Number(totalsOverride.total ?? roundingInfo.roundedTotal ?? computedRawTotal),
+        paid: Number(totalsOverride.paid ?? 0),
+        due: Number(totalsOverride.due ?? (totalsOverride.total ?? roundingInfo.roundedTotal ?? computedRawTotal))
+      };
+      if (!Number.isFinite(finalTotals.subtotal)) {
+        finalTotals.subtotal = subtotalBase;
+      }
+      if (!Number.isFinite(finalTotals.taxAmount)) {
+        finalTotals.taxAmount = computedTaxAmount;
+      }
+      if (!Number.isFinite(finalTotals.discountAmount)) {
+        finalTotals.discountAmount = computedDiscountAmount;
+      }
+      if (!Number.isFinite(finalTotals.total)) {
+        finalTotals.total = Number(computedRawTotal);
+      }
+      if (!Number.isFinite(finalTotals.roundOffAmount)) {
+        finalTotals.roundOffAmount = 0;
+      }
+      if (!Number.isFinite(finalTotals.due)) {
+        finalTotals.due = finalTotals.total;
+      }
+      if (!Number.isFinite(finalTotals.paid)) {
+        finalTotals.paid = 0;
+      }
+      
+      const computedRoundOff = Number((finalTotals.total - computedRawTotal).toFixed(2));
+      if (!roundingInfo.roundingDifference && computedRoundOff !== 0) {
+        roundingInfo.roundingDifference = computedRoundOff;
+      }
+      if (!totalsOverride.roundOffAmount) {
+        finalTotals.roundOffAmount = roundingInfo.roundingDifference;
+      }
+      if (!Number.isFinite(roundingInfo.rawTotal)) {
+        roundingInfo.rawTotal = computedRawTotal;
+      }
+      if (!Number.isFinite(roundingInfo.roundedTotal)) {
+        roundingInfo.roundedTotal = finalTotals.total;
+      }
+      if (!Number.isFinite(roundingInfo.roundingDifference)) {
+        roundingInfo.roundingDifference = finalTotals.roundOffAmount;
+      }
+      finalTotals.due = Math.max(0, finalTotals.due);
       
       console.log('🔍 Calculated totals:', {
         finalConsultationFee,
         serviceTotal,
-        subtotal: finalConsultationFee + serviceTotal
+        registrationFee: registrationFeeValue,
+        subtotal: subtotalBase,
+        taxAmount: computedTaxAmount,
+        discountAmount: computedDiscountAmount,
+        computedRawTotal,
+        roundingInfo,
+        finalTotals
       });
-
-      // Calculate totals
-      const subtotal = finalConsultationFee + serviceTotal;
-      const taxAmount = (subtotal * (parseFloat(taxPercentage) || 0)) / 100;
-      const discountAmount = (subtotal * (parseFloat(discountPercentage) || 0)) / 100;
-      const total = subtotal + taxAmount - discountAmount;
+      
+      const invoiceAmount = finalTotals.total;
 
       // Create invoice data that matches billingSchema
       const invoiceData = {
         type: 'reassignment_consultation', // Required field for billingSchema
         description: `${consultationType} Consultation for Reassigned Patient`,
-        amount: total, // Required field for billingSchema
+        amount: invoiceAmount, // Required field for billingSchema
         consultationType,
         isReassignedEntry: true,
         doctorId,
         status: 'pending',
         invoiceNumber: `INV-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}-${patient.uhId || patient._id.toString().slice(-4)}`,
-        serviceDetails: serviceCharges.filter(s => s.name && s.amount).map(s => `${s.name}: ₹${s.amount}`).join(', '),
+        serviceDetails: sanitizedServiceCharges.map(s => `${s.name}: ₹${s.amount}`).join(', '),
         paymentNotes: isEligibleForFreeReassignment ? 
           `Free reassignment for ${patient.name} (within 7 days)` : 
           notes || `Invoice for reassigned patient: ${patient.name}`,
         createdAt: new Date(), // Ensure proper timestamp
         updatedAt: new Date(), // Ensure proper timestamp
+        registrationFee: registrationFeeValue,
+        consultationFee: finalConsultationFee,
+        serviceCharges: sanitizedServiceCharges,
+        taxPercentage: taxRate,
+        discountType,
+        discountPercentage: parseFloat(discountPercentage) || 0,
+        discountAmount: finalTotals.discountAmount,
+        discountReason: discountReason || null,
+        customDiscountReason: customDiscountReason || null,
+        totals: finalTotals,
+        rounding: roundingInfo,
+        notes,
         // Store additional data in a custom field for frontend use
         customData: {
+          consultationType,
+          registrationFee: registrationFeeValue,
           consultationFee: finalConsultationFee,
-          serviceCharges: serviceCharges.filter(s => s.name && s.amount),
-          taxPercentage: parseFloat(taxPercentage) || 0,
+          serviceCharges: sanitizedServiceCharges,
+          taxPercentage: taxRate,
+          discountType,
           discountPercentage: parseFloat(discountPercentage) || 0,
-          totals: {
-            subtotal,
-            taxAmount,
-            discountAmount,
-            total,
-            paid: 0,
-            due: total
-          }
+          discountAmount: finalTotals.discountAmount,
+          discountReason: discountReason || null,
+          customDiscountReason: customDiscountReason || null,
+          rounding: roundingInfo,
+          totals: finalTotals,
+          notes
         }
       };
 

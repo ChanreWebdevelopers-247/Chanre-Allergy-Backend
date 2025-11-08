@@ -12,6 +12,7 @@ import {
   getDayAppointments,
   bookSlotForPatient,
   deleteAppointmentSlots,
+  cancelBookedSlot,
   setDefaultWorkingHours
 } from '../controllers/doctorCalendarController.js';
 import { protect, ensureRole } from '../middleware/authMiddleware.js';
@@ -35,6 +36,9 @@ router.get('/month-availability', ensureRole('centeradmin', 'receptionist'), get
 
 // Receptionist can book slots
 router.post('/slots/book', ensureRole('receptionist', 'centeradmin'), bookSlotForPatient);
+
+// Receptionist can cancel booked slots
+router.post('/slots/cancel', ensureRole('receptionist', 'centeradmin'), cancelBookedSlot);
 
 // CenterAdmin only routes
 router.use(ensureRole('centeradmin'));
