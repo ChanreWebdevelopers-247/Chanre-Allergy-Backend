@@ -10,6 +10,7 @@ import {
   sendAppointmentBookingSMS,
   sendAppointmentConfirmationSMS 
 } from '../utils/smsService.js';
+import { persistDocuments, enrichDocumentsForResponse } from '../services/documentService.js';
 
 // Get all centers for franchise selection
 export const getAllCentersForBooking = asyncHandler(async (req, res) => {
@@ -138,17 +139,6 @@ export const bookAppointment = asyncHandler(async (req, res) => {
       });
     }
 
-    // Process uploaded medical history documents
-    let medicalHistoryDocs = [];
-    if (req.files && req.files.length > 0) {
-      medicalHistoryDocs = req.files.map(file => ({
-        filename: file.filename,
-        originalName: file.originalname,
-        path: file.path,
-        size: file.size
-      }));
-    }
-
     // Check if a patient already exists with this phone number
     const Patient = (await import('../models/Patient.js')).default;
     const existingPatient = await Patient.findOne({ 
@@ -185,9 +175,41 @@ export const bookAppointment = asyncHandler(async (req, res) => {
       preferredContactTime,
       notes,
       patientLocation,
-      medicalHistoryDocs,
+      medicalHistoryDocs: [],
       patientId: patientId // Link to existing patient if found
     });
+
+    if (req.files && req.files.length > 0) {
+      try {
+        const persistedDocs = await persistDocuments(req.files, {
+          patientId,
+          appointmentId: appointment._id,
+          centerId: center._id,
+          source: 'appointment_booking',
+          context: 'medical_history',
+        });
+
+        const serializedDocs = enrichDocumentsForResponse(persistedDocs);
+
+        appointment.medicalHistoryDocs = serializedDocs.map((doc) => ({
+          documentId: doc.documentId || null,
+          filename: doc.originalName || doc.documentId || 'medical-document',
+          originalName: doc.originalName || doc.filename,
+          mimeType: doc.mimeType,
+          path: doc.path,
+          size: doc.size,
+          source: doc.source,
+          context: doc.context,
+          uploadedBy: doc.uploadedBy,
+          centerId: doc.centerId || center._id,
+          uploadedAt: doc.uploadedAt || new Date()
+        }));
+
+        await appointment.save();
+      } catch (docError) {
+        console.error('Error persisting medical history documents:', docError);
+      }
+    }
     
     // If patient exists, update their appointmentId reference
     if (existingPatient) {

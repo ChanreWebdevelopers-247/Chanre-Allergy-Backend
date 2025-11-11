@@ -1,5 +1,6 @@
 import Patient from '../models/Patient.js';
 import Test from '../models/Test.js'; // Make sure this import is correct
+import { attachDocumentsToHistory } from '../services/historyAttachmentService.js';
 
 const addPatient = async (req, res) => {
   try {
@@ -116,15 +117,25 @@ const addPatient = async (req, res) => {
     const newPatient = new Patient(patientData);
     const savedPatient = await newPatient.save();
 
-    // If this is from an existing appointment, update the appointment status
+    // If this is from an existing appointment, update the appointment status and attach documents
     if (appointmentId && appointmentConfirmed) {
       try {
         const PatientAppointment = (await import('../models/PatientAppointment.js')).default;
-        await PatientAppointment.findByIdAndUpdate(appointmentId, {
+        const updatedAppointment = await PatientAppointment.findByIdAndUpdate(appointmentId, {
           status: 'completed',
           patientId: savedPatient._id,
           completedAt: new Date()
-        });
+        }, { new: true });
+
+        if (updatedAppointment?.medicalHistoryDocs?.length) {
+          await attachDocumentsToHistory(savedPatient._id, updatedAppointment.medicalHistoryDocs, {
+            source: 'appointment_booking',
+            context: 'patient_registration',
+            linkedAppointmentId: updatedAppointment._id,
+            uploadedBy: req.user?._id,
+            centerId: savedPatient.centerId || patientCenterId
+          });
+        }
       } catch (appointmentError) {
         console.error('Error updating appointment:', appointmentError);
         // Don't fail the patient creation if appointment update fails
@@ -213,7 +224,7 @@ const getPatients = async (req, res) => {
       .populate('centerId', 'name code')
       .populate('assignedDoctor', 'name specializations specialization')
       .populate('currentDoctor', 'name specializations specialization')
-      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode')
+      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode medicalHistoryDocs')
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .sort({ createdAt: -1 });
@@ -653,7 +664,7 @@ const getPatientsByDoctor = async (req, res) => {
       .populate('centerId', 'name code')
       .populate('assignedDoctor', 'name specializations specialization')
       .populate('currentDoctor', 'name specializations specialization')
-      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode')
+      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode medicalHistoryDocs')
       .select('name age gender phone email address centerId assignedDoctor appointmentId appointmentTime appointmentStatus fromAppointment assignedAt appointments isReassigned reassignmentHistory');
     
     // Manually populate assignedDoctor if it's still a string
@@ -709,7 +720,8 @@ const getPatientsByDoctor = async (req, res) => {
       // Priority 2: If patient has appointmentId (singular), fetch that appointment from PatientAppointment collection
       if (patient.appointmentId) {
         try {
-          const appointment = await PatientAppointment.findById(patient.appointmentId);
+          const appointment = await PatientAppointment.findById(patient.appointmentId)
+            .select('patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode medicalHistoryDocs centerId bookedAt createdAt');
           if (appointment) {
             // Check if it's already in the appointments array
             const exists = appointments.some(existing => {
@@ -742,6 +754,7 @@ const getPatientsByDoctor = async (req, res) => {
           }
           
           const additionalAppointments = await PatientAppointment.find(searchQuery)
+            .select('patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode medicalHistoryDocs centerId bookedAt createdAt')
             .sort({ preferredDate: -1 })
             .limit(10); // Limit to recent appointments
           
@@ -1377,7 +1390,7 @@ const getPatientAppointment = async (req, res) => {
     const { patientId } = req.params;
     
     const patient = await Patient.findById(patientId)
-      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode');
+      .populate('appointmentId', 'patientName patientEmail patientPhone preferredDate preferredTime confirmedDate confirmedTime appointmentType reasonForVisit symptoms status confirmationCode medicalHistoryDocs');
     
     if (!patient) {
       return res.status(404).json({ message: 'Patient not found' });

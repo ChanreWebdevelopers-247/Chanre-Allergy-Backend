@@ -1,7 +1,7 @@
 import express from 'express';
 import { protect, ensureCenterIsolation, checkSuperAdmin } from '../middleware/authMiddleware.js';
 import uploadReceipt from '../middleware/receiptUploadMiddleware.js';
-import {
+import { 
   generateBillForTestRequest,
   markBillPaidForTestRequest,
   getBillingInfo,
@@ -32,6 +32,7 @@ import {
   updatePaidBill
 } from '../controllers/billingController.js';
 import { generateInvoicePDF, generateConsultationInvoicePDF, generateReassignmentInvoicePDF } from '../controllers/invoiceController.js';
+import { uploadMedicalDocs } from '../middleware/appointmentUploadMiddleware.js';
 
 const router = express.Router();
 
@@ -61,7 +62,7 @@ router.post('/record-partial-payment', ensureCenterIsolation, recordPartialPayme
 router.post('/create-invoice', ensureCenterIsolation, createComprehensiveInvoice);
 
 // Process payment for existing invoice
-router.post('/process-payment', ensureCenterIsolation, processPayment);
+router.post('/process-payment', ensureCenterIsolation, uploadMedicalDocs, processPayment);
 
 // Cancel bill with reason tracking
 router.post('/cancel-bill', ensureCenterIsolation, cancelBillWithReason);

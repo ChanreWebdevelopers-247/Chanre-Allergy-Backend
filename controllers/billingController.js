@@ -15,6 +15,7 @@ import {
   logPatientBillingCancellation
 } from '../services/paymentLogService.js';
 import TransactionService from '../services/transactionService.js';
+import { attachDocumentsToHistory } from '../services/historyAttachmentService.js';
 
 // Generate bill for a test request (Receptionist action)
 export const generateBillForTestRequest = async (req, res) => {
@@ -4191,6 +4192,35 @@ export const processPayment = async (req, res) => {
 
     // Save patient
     await patient.save();
+
+    // Attach any uploaded documents from this payment
+    try {
+      if (Array.isArray(req.files) && req.files.length > 0) {
+        await attachDocumentsToHistory(patient._id, req.files, {
+          source: 'consultation_billing',
+          context: 'offline_upload',
+          uploadedBy: req.user?._id,
+          centerId: patient.centerId || null,
+        });
+      }
+
+      if (patient.fromAppointment && patient.appointmentId) {
+        const PatientAppointment = (await import('../models/PatientAppointment.js')).default;
+        const appointmentRecord = await PatientAppointment.findById(patient.appointmentId).select('medicalHistoryDocs');
+
+        if (appointmentRecord?.medicalHistoryDocs?.length) {
+          await attachDocumentsToHistory(patient._id, appointmentRecord.medicalHistoryDocs, {
+            source: 'appointment_booking',
+            context: 'consultation_payment',
+            linkedAppointmentId: appointmentRecord._id,
+            uploadedBy: req.user?._id,
+            centerId: patient.centerId || appointmentRecord.centerId || null,
+          });
+        }
+      }
+    } catch (attachmentError) {
+      console.error('❌ Error attaching medical history documents:', attachmentError);
+    }
 
     // ✅ NEW: Check if superconsultant billing was paid and notify superconsultant
     try {

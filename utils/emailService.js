@@ -4,26 +4,71 @@ import User from '../models/User.js';
 
 // Email configuration
 const createTransporter = () => {
-  const emailUser = process.env.EMAIL_USER || 'your-email@gmail.com';
-  const emailPass = process.env.EMAIL_PASS || 'your-app-password';
-  
-  console.log('Email configuration:', {
-    user: emailUser,
-    pass: emailPass ? '***configured***' : 'NOT_SET'
-  });
-  
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+  const emailUser = process.env.EMAIL_USER;
+  const rawEmailPass = process.env.EMAIL_PASS;
+  const emailPass = rawEmailPass ? rawEmailPass.replace(/\s+/g, '') : undefined;
+  const emailService = process.env.EMAIL_SERVICE;
+  const emailHost = process.env.EMAIL_HOST;
+  const emailPort = process.env.EMAIL_PORT;
+  const emailSecure = process.env.EMAIL_SECURE;
+
+  if (!emailUser || !rawEmailPass) {
     console.error('EMAIL_USER or EMAIL_PASS not configured in environment variables');
     throw new Error('Email configuration missing. Please set EMAIL_USER and EMAIL_PASS in .env file');
   }
-  
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: emailUser,
-      pass: emailPass
-    }
+
+  const hasCustomTransport = !!(emailHost || emailService);
+
+  const transporterConfig = emailService
+    ? {
+        service: emailService,
+        auth: {
+          user: emailUser,
+          pass: emailPass
+        }
+      }
+    : {
+        host: emailHost || 'smtp.gmail.com',
+        port: emailPort ? Number(emailPort) : 465,
+        secure: typeof emailSecure === 'string'
+          ? emailSecure.toLowerCase() === 'true'
+          : emailPort
+            ? Number(emailPort) === 465
+            : true,
+        auth: {
+          user: emailUser,
+          pass: emailPass
+        }
+      };
+
+  console.log('Email configuration:', {
+    user: emailUser,
+    usingCustomTransport: hasCustomTransport,
+    transport: {
+      ...(emailService ? { service: emailService } : {}),
+      ...(emailHost ? { host: emailHost } : {}),
+      ...(emailPort ? { port: Number(emailPort) } : {}),
+      ...(emailSecure ? { secure: emailSecure } : {})
+    },
+    sanitizedPass: rawEmailPass && rawEmailPass !== emailPass ? '***spaces removed***' : '***redacted***'
   });
+
+  if (rawEmailPass && rawEmailPass !== emailPass) {
+    console.warn('EMAIL_PASS contained whitespace. Automatically removing spaces for SMTP authentication. If this is unintended, update EMAIL_PASS without spaces.');
+  }
+
+  return nodemailer.createTransport(transporterConfig);
+};
+
+const getSenderEmail = () => {
+  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER;
+
+  if (!senderEmail) {
+    console.error('Sender email not configured in environment variables');
+    throw new Error('Sender email not configured. Please set EMAIL_USER or EMAIL_FROM in .env file');
+  }
+
+  return senderEmail;
 };
 
 // Email templates
@@ -241,7 +286,7 @@ export const sendAppointmentConfirmation = async (appointment) => {
     const transporter = createTransporter();
     
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: getSenderEmail(),
       to: appointment.patientEmail,
       subject: `Appointment Confirmed - ${appointment.centerName}`,
       html: emailTemplates.appointmentConfirmation(appointment)
@@ -294,7 +339,7 @@ export const sendAppointmentNotificationToCenter = async (appointment) => {
     recipients = [...new Set(recipients)];
     
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: getSenderEmail(),
       to: recipients.join(', '), // Send to center, admin, and all receptionists
       subject: `New Appointment Booking - ${appointment.patientName}`,
       html: emailTemplates.appointmentNotificationToCenter(appointment, center.centerAdminId?.name || '')
@@ -320,7 +365,7 @@ export const sendAppointmentCancellation = async (appointment) => {
     const transporter = createTransporter();
     
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: getSenderEmail(),
       to: appointment.patientEmail,
       subject: `Appointment Cancelled - ${appointment.centerName}`,
       html: emailTemplates.appointmentCancellation(appointment)
@@ -340,7 +385,7 @@ export const sendTestEmail = async (toEmail) => {
     const transporter = createTransporter();
     
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: getSenderEmail(),
       to: toEmail,
       subject: 'Test Email - ChanRe Allergy Center',
       html: `
@@ -403,7 +448,7 @@ export const sendTestEmailToCenter = async (centerId, testEmail) => {
     recipients = [...new Set(recipients)];
     
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: getSenderEmail(),
       to: recipients.join(', '),
       subject: `Test Email - ChanRe Allergy Center (${center.name})`,
       html: `

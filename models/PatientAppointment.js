@@ -140,10 +140,16 @@ const patientAppointmentSchema = new mongoose.Schema({
   
   // Medical history documents
   medicalHistoryDocs: [{
+    documentId: { type: mongoose.Schema.Types.ObjectId, ref: 'MedicalDocument' },
     filename: String,
     originalName: String,
+    mimeType: String,
     path: String,
     size: Number,
+    source: String,
+    context: String,
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    centerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Center' },
     uploadedAt: {
       type: Date,
       default: Date.now

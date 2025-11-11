@@ -1,20 +1,10 @@
 import multer from 'multer';
-import path from 'path';
 
-// Configure storage for appointment documents
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/appointment-docs/');
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'medical-doc-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// Use in-memory storage so documents can be persisted in MongoDB
+const storage = multer.memoryStorage();
 
 // File filter for appointment documents
 const fileFilter = (req, file, cb) => {
-  // Allow PDF, DOC, DOCX, JPG, JPEG, PNG files for medical documents
   const allowedTypes = [
     'application/pdf',
     'application/msword',
@@ -24,7 +14,7 @@ const fileFilter = (req, file, cb) => {
     'image/png',
     'text/plain'
   ];
-  
+
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
@@ -32,17 +22,16 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Configure multer for appointment documents
 const appointmentUpload = multer({
-  storage: storage,
-  fileFilter: fileFilter,
+  storage,
+  fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
+    fileSize: 10 * 1024 * 1024, // 10MB limit per file
+    files: 5
   }
 });
 
-// Middleware to handle multiple files
-export const uploadMedicalDocs = appointmentUpload.array('medicalHistoryDocs', 5); // Allow up to 5 files
+export const uploadMedicalDocs = appointmentUpload.array('medicalHistoryDocs', 5);
 
 export default appointmentUpload;
 

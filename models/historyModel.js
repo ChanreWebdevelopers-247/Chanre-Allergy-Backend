@@ -133,8 +133,26 @@ const historySchema = new mongoose.Schema({
   abdomen: String,
   otherFindings: String,
   
-  // Report File
-  reportFile: String
+  // Report File (legacy single file support)
+  reportFile: String,
+
+  // Attached Documents (supports multiple files with metadata)
+  attachments: [{
+    documentId: { type: mongoose.Schema.Types.ObjectId, ref: 'MedicalDocument' },
+    filename: String,
+    originalName: String,
+    mimeType: String,
+    path: String,
+    size: Number,
+    source: String,
+    context: String,
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    linkedAppointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatientAppointment' },
+    uploadedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }]
 
 }, { timestamps: true });
 
