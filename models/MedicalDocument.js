@@ -24,3 +24,4 @@ medicalDocumentSchema.index({ uploadedBy: 1, createdAt: -1 });
 const MedicalDocument = mongoose.model('MedicalDocument', medicalDocumentSchema);
 export default MedicalDocument;
 
+

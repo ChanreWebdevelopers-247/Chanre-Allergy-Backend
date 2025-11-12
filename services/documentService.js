@@ -2,7 +2,7 @@ import MedicalDocument from '../models/MedicalDocument.js';
 import Patient from '../models/Patient.js';
 import PatientAppointment from '../models/PatientAppointment.js';
 
-const buildDownloadPath = (id) => `api/documents/${id}/download`;
+export const buildDownloadPath = (id) => `api/documents/${id}/download`;
 
 const coerceObjectId = (value) => {
   if (!value) return null;
@@ -155,5 +155,7 @@ export default {
   serializeDocument,
   enrichDocumentsForResponse,
   resolveDocumentContext,
+  buildDownloadPath,
 };
+
 

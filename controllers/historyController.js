@@ -1,10 +1,23 @@
 import History from '../models/historyModel.js';
+import { attachDocumentsToHistory } from '../services/historyAttachmentService.js';
+
+const buildDocumentDescriptors = (files = [], overrides = {}) => {
+  if (!Array.isArray(files)) return [];
+  return files
+    .filter((file) => file && file.buffer)
+    .map((file) => ({
+      buffer: file.buffer,
+      originalName: file.originalname || file.originalName || file.filename || 'medical-document',
+      mimeType: file.mimetype || file.mimeType || 'application/octet-stream',
+      size: file.size || 0,
+      ...overrides,
+    }));
+};
 
 export const createHistory = async (req, res) => {
   try {
     // Parse JSON string
-    const parsedData = JSON.parse(req.body.formData);
-    const fileName = req.file ? req.file.filename : null;
+    const parsedData = req.body.formData ? JSON.parse(req.body.formData) : {};
 
     // Require patientId explicitly; do not fallback to user id
     const providedPatientId = parsedData.patientId || parsedData.patient;
@@ -21,15 +34,44 @@ export const createHistory = async (req, res) => {
     const objectIdPatientId = new mongoose.Types.ObjectId(providedPatientId);
 
     // Create history record with all form data as direct fields
-    const history = await History.create({
+    let history = await History.create({
       patientId: objectIdPatientId,
       ...parsedData, // Spread all the form fields directly
-      reportFile: fileName,
     });
+
+    const files = [];
+    if (req.file) files.push(req.file);
+    if (req.files && Array.isArray(req.files)) files.push(...req.files);
+
+    if (files.length) {
+      try {
+        const documentDescriptors = buildDocumentDescriptors(files, {
+          uploadedBy: req.user?._id || null,
+          source: 'history_report',
+          context: 'history_report',
+          patientId: objectIdPatientId,
+        });
+
+        const updatedHistory = await attachDocumentsToHistory(objectIdPatientId, documentDescriptors, {
+          historyId: history._id,
+          uploadedBy: req.user?._id || null,
+          source: 'history_report',
+          context: 'history_report',
+        });
+
+        if (updatedHistory) {
+          history = updatedHistory;
+        }
+      } catch (attachmentError) {
+        console.error('Failed to persist history attachment:', attachmentError);
+      }
+    }
+
+    const historyResponse = history?.toObject ? history.toObject() : history;
 
     res.status(201).json({
       message: 'Medical history saved successfully',
-      data: history,
+      data: historyResponse,
     });
   } catch (err) {
     console.error('Error saving history:', err.message);
@@ -105,7 +147,6 @@ export const getHistoryByPatient = async (req, res) => {
 export const updateHistory = async (req, res) => {
   try {
     const { id } = req.params;
-    const fileName = req.file ? req.file.filename : null;
 
     // Parse JSON string if it exists
     let parsedData = {};
@@ -125,21 +166,44 @@ export const updateHistory = async (req, res) => {
     }
 
     // Prepare update data
-    const updateData = { ...parsedData };
-    if (fileName) {
-      updateData.reportFile = fileName;
+    Object.assign(existingHistory, parsedData);
+    await existingHistory.save();
+
+    const files = [];
+    if (req.file) files.push(req.file);
+    if (req.files && Array.isArray(req.files)) files.push(...req.files);
+
+    let historyRecord = existingHistory;
+
+    if (files.length) {
+      try {
+        const documentDescriptors = buildDocumentDescriptors(files, {
+          uploadedBy: req.user?._id || null,
+          source: 'history_report',
+          context: 'history_report_update',
+          patientId: existingHistory.patientId,
+        });
+
+        const updatedHistory = await attachDocumentsToHistory(existingHistory.patientId, documentDescriptors, {
+          historyId: existingHistory._id,
+          uploadedBy: req.user?._id || null,
+          source: 'history_report',
+          context: 'history_report_update',
+        });
+
+        if (updatedHistory) {
+          historyRecord = updatedHistory;
+        }
+      } catch (attachmentError) {
+        console.error('Failed to persist updated history attachment:', attachmentError);
+      }
     }
 
-    // Update the history record
-    const updatedHistory = await History.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const historyResponse = historyRecord?.toObject ? historyRecord.toObject() : historyRecord;
 
     res.status(200).json({
       message: 'Medical history updated successfully',
-      data: updatedHistory,
+      data: historyResponse,
     });
   } catch (err) {
     console.error('Error updating history:', err.message);

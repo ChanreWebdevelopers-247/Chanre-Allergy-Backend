@@ -3,6 +3,7 @@ import {
   persistDocuments,
   enrichDocumentsForResponse,
   resolveDocumentContext,
+  buildDownloadPath,
 } from './documentService.js';
 
 /**
@@ -35,7 +36,15 @@ export const attachDocumentsToHistory = async (patientId, documents = [], option
     return null;
   }
 
-  let historyRecord = await History.findOne({ patientId }).sort({ createdAt: -1 });
+  let historyRecord = null;
+
+  if (options.historyId) {
+    historyRecord = await History.findById(options.historyId);
+  }
+
+  if (!historyRecord) {
+    historyRecord = await History.findOne({ patientId }).sort({ createdAt: -1 });
+  }
 
   if (!historyRecord) {
     historyRecord = new History({
@@ -63,12 +72,14 @@ export const attachDocumentsToHistory = async (patientId, documents = [], option
       return;
     }
 
+    const downloadPath = doc.path || (doc.documentId ? buildDownloadPath(doc.documentId) : null);
+
     historyRecord.attachments.push({
       documentId: doc.documentId || null,
       filename: doc.originalName || doc.documentId || 'medical-document',
       originalName: doc.originalName || doc.filename || 'medical-document',
       mimeType: doc.mimeType || 'application/octet-stream',
-      path: doc.path || null,
+      path: downloadPath,
       size: doc.size || 0,
       source: doc.source || context.source || 'unknown',
       context: doc.context || context.context || null,
@@ -83,14 +94,19 @@ export const attachDocumentsToHistory = async (patientId, documents = [], option
     added = true;
   });
 
-  if (!historyRecord.reportFile && historyRecord.attachments.length > 0) {
-    historyRecord.reportFile = historyRecord.attachments[0].filename;
+  if (historyRecord.attachments.length > 0) {
+    const latestAttachment = historyRecord.attachments[historyRecord.attachments.length - 1];
+    if (latestAttachment) {
+      historyRecord.reportFile = latestAttachment.path || latestAttachment.filename || historyRecord.reportFile;
+      historyRecord.originalName = latestAttachment.originalName || historyRecord.originalName;
+    }
   }
 
   if (!added) {
     return historyRecord;
   }
 
+  historyRecord.markModified('attachments');
   await historyRecord.save();
   return historyRecord;
 };
