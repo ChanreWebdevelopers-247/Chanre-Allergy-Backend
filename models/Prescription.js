@@ -8,6 +8,13 @@ const medicationSchema = new mongoose.Schema({
   instructions: String
 }, { _id: false });
 
+const testSchema = new mongoose.Schema({
+  name: { type: String, trim: true },
+  instruction: { type: String, trim: true },
+  status: { type: String, trim: true },
+  requestId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestRequest' }
+}, { _id: false });
+
 const prescriptionSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
   doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -16,8 +23,17 @@ const prescriptionSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
   diagnosis: String,
   medications: [medicationSchema],
+  tests: [testSchema],
   instructions: String,
   followUp: String,
+  followUpInstruction: String,
+  remarks: String,
+  preparedBy: String,
+  preparedByCredentials: String,
+  medicalCouncilNumber: String,
+  printedBy: String,
+  reportGeneratedAt: Date,
+  prescribedBy: String,
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 

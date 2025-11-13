@@ -53,6 +53,38 @@ function numberToWords(num) {
   return result.trim();
 }
 
+const renderCenterLogo = (doc, center, options = {}) => {
+  const {
+    x = 400,
+    y = 45,
+    fit = [160, 80],
+    align = 'right',
+    fallbackY = 135,
+    defaultY = 20,
+  } = options;
+
+  if (!center?.logoUrl) {
+    return defaultY;
+  }
+
+  const normalizedLogoPath = center.logoUrl.startsWith('/')
+    ? center.logoUrl.slice(1)
+    : center.logoUrl;
+  const absoluteLogoPath = path.join(process.cwd(), normalizedLogoPath);
+
+  if (!fs.existsSync(absoluteLogoPath)) {
+    return defaultY;
+  }
+
+  try {
+    doc.image(absoluteLogoPath, x, y, { fit, align });
+    return fallbackY;
+  } catch (error) {
+    console.warn('⚠️ Failed to render center logo on invoice:', error.message);
+    return defaultY;
+  }
+};
+
 // Generate PDF invoice with professional design matching the image
 export const generateInvoicePDF = async (req, res) => {
   try {
@@ -125,6 +157,8 @@ export const generateInvoicePDF = async (req, res) => {
        .text(`Phone: ${hospitalPhone} | Fax: ${hospitalFax}`, 20, 87)
        .text(`Website: ${hospitalWebsite}`, 20, 102);
     
+    const billInfoStartY = renderCenterLogo(doc, testRequest.centerId);
+
     // Bill Details (Top Right)
     const billNumber = testRequest.billing.invoiceNumber || `BILL-${Date.now()}`;
     const billDate = testRequest.billing.generatedAt ? 
@@ -137,12 +171,12 @@ export const generateInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica-Bold')
-       .text(`Bill No: ${billNumber}`, 400, 20, { align: 'right', width: 170 });
+       .text(`Bill No: ${billNumber}`, 400, billInfoStartY, { align: 'right', width: 170 });
     
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`BILL Date: ${billDate}, ${billTime}`, 400, 42, { align: 'right', width: 170 });
+       .text(`BILL Date: ${billDate}, ${billTime}`, 400, billInfoStartY + 22, { align: 'right', width: 170 });
     
     // ===== PATIENT & CONSULTANT INFORMATION =====
     const infoY = 125;
@@ -760,6 +794,11 @@ export const generateConsultationInvoicePDF = async (req, res) => {
        .text(`Phone: ${hospitalPhone}`, 20, 58)
        .text(`Email: ${hospitalEmail}`, 20, 71);
     
+    const billInfoStartY = renderCenterLogo(doc, patient.centerId, {
+      defaultY: 20,
+      fallbackY: 120,
+    });
+
     // Bill Details (Top Right) - Use actual invoice data from database
     const billNumber = latestInvoiceNumber || `CONSULT-${Date.now()}`;
     const billDate = invoiceBills[0]?.createdAt ? 
@@ -772,8 +811,8 @@ export const generateConsultationInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Bill No: ${billNumber}`, 400, 20, { align: 'right', width: 170 })
-       .text(`BILL Date: ${billDate}, ${billTime}`, 400, 33, { align: 'right', width: 170 });
+       .text(`Bill No: ${billNumber}`, 400, billInfoStartY, { align: 'right', width: 170 })
+       .text(`BILL Date: ${billDate}, ${billTime}`, 400, billInfoStartY + 13, { align: 'right', width: 170 });
     
     // ===== PATIENT & CONSULTANT INFORMATION =====
     const infoY = 100;
@@ -1129,6 +1168,11 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
        .text(`Phone: ${hospitalPhone}`, 20, 58)
        .text(`Email: ${hospitalEmail}`, 20, 71);
     
+    const billInfoStartY = renderCenterLogo(doc, patient.centerId, {
+      defaultY: 20,
+      fallbackY: 120,
+    });
+
     // Bill Details (Top Right)
     const billNumber = `REASSIGN-${Date.now()}`;
     const billDate = new Date().toLocaleDateString('en-GB');
@@ -1137,8 +1181,8 @@ export const generateReassignmentInvoicePDF = async (req, res) => {
     doc.fillColor('#000000')
        .fontSize(10)
        .font('Helvetica')
-       .text(`Bill No: ${billNumber}`, 400, 20, { align: 'right', width: 170 })
-       .text(`BILL Date: ${billDate}, ${billTime}`, 400, 33, { align: 'right', width: 170 });
+       .text(`Bill No: ${billNumber}`, 400, billInfoStartY, { align: 'right', width: 170 })
+       .text(`BILL Date: ${billDate}, ${billTime}`, 400, billInfoStartY + 13, { align: 'right', width: 170 });
     
     // ===== PATIENT & CONSULTANT INFORMATION =====
     const infoY = 100;

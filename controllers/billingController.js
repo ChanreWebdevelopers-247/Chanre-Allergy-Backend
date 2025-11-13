@@ -3,6 +3,7 @@ import Patient from '../models/Patient.js';
 import Notification from '../models/Notification.js';
 import User from '../models/User.js';
 import SuperAdminDoctor from '../models/SuperAdminDoctor.js';
+import History from '../models/historyModel.js';
 import mongoose from 'mongoose';
 import PaymentLog from '../models/PaymentLog.js';
 import { 
@@ -4002,6 +4003,7 @@ export const createComprehensiveInvoice = async (req, res) => {
 // Process payment for existing invoice
 export const processPayment = async (req, res) => {
   let patient = null; // Declare patient outside try block for error handling
+  let historyRecordForGeneralUpdate = null;
   try {
     console.log('🚀 processPayment called');
     console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
@@ -4017,6 +4019,26 @@ export const processPayment = async (req, res) => {
       consultationType,
       superConsultantId
     } = req.body;
+
+    const normalizeGeneralExamField = (value) => {
+      if (value === undefined || value === null) return null;
+      if (Array.isArray(value)) {
+        value = value[0];
+      }
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed === '' ? null : trimmed;
+      }
+      return value;
+    };
+
+    const generalExamination = {
+      bloodPressure: normalizeGeneralExamField(req.body.bloodPressure),
+      pulseRate: normalizeGeneralExamField(req.body.pulseRate),
+      spo2: normalizeGeneralExamField(req.body.spo2)
+    };
+
+    const hasGeneralExaminationData = Object.values(generalExamination).some((value) => value !== null && value !== undefined);
 
     if (!patientId || !amount || !paymentMethod) {
       return res.status(400).json({
@@ -4196,7 +4218,7 @@ export const processPayment = async (req, res) => {
     // Attach any uploaded documents from this payment
     try {
       if (Array.isArray(req.files) && req.files.length > 0) {
-        await attachDocumentsToHistory(patient._id, req.files, {
+        historyRecordForGeneralUpdate = await attachDocumentsToHistory(patient._id, req.files, {
           source: 'consultation_billing',
           context: 'offline_upload',
           uploadedBy: req.user?._id,
@@ -4209,17 +4231,53 @@ export const processPayment = async (req, res) => {
         const appointmentRecord = await PatientAppointment.findById(patient.appointmentId).select('medicalHistoryDocs');
 
         if (appointmentRecord?.medicalHistoryDocs?.length) {
-          await attachDocumentsToHistory(patient._id, appointmentRecord.medicalHistoryDocs, {
+          const appointmentHistory = await attachDocumentsToHistory(patient._id, appointmentRecord.medicalHistoryDocs, {
             source: 'appointment_booking',
             context: 'consultation_payment',
             linkedAppointmentId: appointmentRecord._id,
             uploadedBy: req.user?._id,
             centerId: patient.centerId || appointmentRecord.centerId || null,
           });
+          if (appointmentHistory) {
+            historyRecordForGeneralUpdate = appointmentHistory;
+          }
         }
       }
     } catch (attachmentError) {
       console.error('❌ Error attaching medical history documents:', attachmentError);
+    }
+
+    if (hasGeneralExaminationData) {
+      try {
+        let historyRecord = historyRecordForGeneralUpdate;
+        if (!historyRecord) {
+          historyRecord = await History.findOne({ patientId: patient._id }).sort({ createdAt: -1 });
+        }
+
+        if (!historyRecord) {
+          historyRecord = new History({
+            patientId: patient._id,
+          });
+        } else if (!historyRecord.patientId) {
+          historyRecord.patientId = patient._id;
+        }
+
+        const applyGeneralField = (field, value) => {
+          if (value !== null && value !== undefined) {
+            historyRecord[field] = value;
+            historyRecord.markModified(field);
+          }
+        };
+
+        applyGeneralField('bloodPressure', generalExamination.bloodPressure);
+        applyGeneralField('pulseRate', generalExamination.pulseRate);
+        applyGeneralField('spo2', generalExamination.spo2);
+
+        await historyRecord.save();
+        historyRecordForGeneralUpdate = historyRecord;
+      } catch (generalExamError) {
+        console.error('⚠️ Error updating general examination data on history record:', generalExamError);
+      }
     }
 
     // ✅ NEW: Check if superconsultant billing was paid and notify superconsultant

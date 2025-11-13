@@ -120,6 +120,10 @@ const centerSchema = new mongoose.Schema({
     type: String,
     default: '9686197153'
   },
+  logoUrl: {
+    type: String,
+    default: ''
+  },
   createdAt: {
     type: Date,
     default: Date.now

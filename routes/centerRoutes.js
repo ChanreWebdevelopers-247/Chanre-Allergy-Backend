@@ -9,10 +9,12 @@ import {
   getCenterStats,
   getCenterByAdminId,
   updateCenterFees,
-  getCenterFees
+  getCenterFees,
+  uploadCenterLogo,
 } from '../controllers/centerController.js';
 
 import { protect } from '../middleware/authMiddleware.js';
+import centerLogoUpload from '../middleware/centerLogoUploadMiddleware.js';
 
 const router = express.Router();
 
@@ -22,6 +24,7 @@ router.get('/by-admin/:adminId', protect, getCenterByAdminId);
 router.get('/:id/stats', protect, getCenterStats);
 router.get('/:id/fees', protect, getCenterFees);
 router.put('/:id/fees', protect, updateCenterFees);
+router.put('/:id/logo', protect, centerLogoUpload.single('logo'), uploadCenterLogo);
 
 router.post('/create-with-admin', createCenterWithAdmin);
 router.get('/', protect, getAllCenters);

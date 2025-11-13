@@ -123,6 +123,9 @@ const historySchema = new mongoose.Schema({
   familyHistory: String,
   
   // Examination
+  bloodPressure: String,
+  pulseRate: String,
+  spo2: String,
   oralCavity: String,
   skin: String,
   ent: String,

@@ -10,9 +10,18 @@ export const createPrescription = async (req, res) => {
       visit, 
       date, 
       diagnosis, 
-      medications, 
+      medications = [], 
+      tests = [],
       instructions, 
-      followUp 
+      followUp, 
+      followUpInstruction, 
+      remarks, 
+      preparedBy, 
+      preparedByCredentials, 
+      medicalCouncilNumber,
+      printedBy,
+      reportGeneratedAt,
+      prescribedBy 
     } = req.body;
     const updatedBy = req.user._id;
     if (!patientId) {
@@ -26,8 +35,17 @@ export const createPrescription = async (req, res) => {
       date, 
       diagnosis, 
       medications, 
+      tests,
       instructions, 
-      followUp, 
+      followUp: followUp || followUpInstruction, 
+      followUpInstruction,
+      remarks,
+      preparedBy,
+      preparedByCredentials,
+      medicalCouncilNumber,
+      printedBy,
+      reportGeneratedAt,
+      prescribedBy,
       updatedBy 
     });
     res.status(201).json({ message: 'Prescription added', data: record });

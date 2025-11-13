@@ -2,6 +2,8 @@ import Center from '../models/Center.js';
 import User from '../models/User.js';
 import asyncHandler from 'express-async-handler';
 import Patient from '../models/Patient.js';
+import fs from 'fs';
+import path from 'path';
 
 // Create center with admin
 export const createCenterWithAdmin = async (req, res) => {
@@ -292,6 +294,7 @@ export const updateCenterFees = asyncHandler(async (req, res) => {
   if (req.body.fax !== undefined) center.fax = req.body.fax;
   if (req.body.missCallNumber !== undefined) center.missCallNumber = req.body.missCallNumber;
   if (req.body.mobileNumber !== undefined) center.mobileNumber = req.body.mobileNumber;
+  if (req.body.logoUrl !== undefined) center.logoUrl = req.body.logoUrl;
 
   const updatedCenter = await center.save();
   res.json(updatedCenter);
@@ -312,10 +315,48 @@ export const getCenterFees = async (req, res) => {
       labWebsite: center.labWebsite,
       fax: center.fax,
       missCallNumber: center.missCallNumber,
-      mobileNumber: center.mobileNumber
+      mobileNumber: center.mobileNumber,
+      logoUrl: center.logoUrl || ''
     });
   } catch (error) {
     console.error('Error fetching center fees:', error);
     res.status(500).json({ message: "Failed to fetch center fees", error: error.message });
   }
 };
+
+export const uploadCenterLogo = asyncHandler(async (req, res) => {
+  const center = await Center.findById(req.params.id);
+  if (!center) {
+    res.status(404);
+    throw new Error('Center not found');
+  }
+
+  if (!req.file) {
+    res.status(400);
+    throw new Error('Logo file is required');
+  }
+
+  // Clean up previous logo if exists
+  if (center.logoUrl) {
+    const existingPath = path.join(process.cwd(), center.logoUrl.replace(/^\//, ''));
+    try {
+      if (fs.existsSync(existingPath)) {
+        fs.unlinkSync(existingPath);
+      }
+    } catch (cleanupError) {
+      console.warn('Failed to remove existing center logo:', cleanupError);
+    }
+  }
+
+  const normalizedPath = req.file.path.replace(/\\/g, '/');
+  const publicPath = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`;
+
+  center.logoUrl = publicPath;
+  center.updatedAt = new Date();
+  await center.save();
+
+  res.json({
+    message: 'Logo uploaded successfully',
+    logoUrl: center.logoUrl,
+  });
+});
