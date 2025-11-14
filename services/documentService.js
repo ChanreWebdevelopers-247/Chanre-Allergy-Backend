@@ -1,6 +1,7 @@
 import MedicalDocument from '../models/MedicalDocument.js';
 import Patient from '../models/Patient.js';
 import PatientAppointment from '../models/PatientAppointment.js';
+import History from '../models/historyModel.js';
 
 export const buildDownloadPath = (id) => `api/documents/${id}/download`;
 
@@ -144,6 +145,19 @@ export const resolveDocumentContext = async (defaults = {}) => {
     const appointment = await PatientAppointment.findById(context.appointmentId).select('centerId');
     if (appointment?.centerId) {
       context.centerId = appointment.centerId;
+    }
+  }
+
+  // Resolve patientId and centerId from historyId
+  if (!context.patientId && context.historyId) {
+    const history = await History.findById(context.historyId).select('patientId');
+    if (history?.patientId) {
+      context.patientId = history.patientId;
+      // Also resolve centerId from the patient
+      const patient = await Patient.findById(history.patientId).select('centerId');
+      if (patient?.centerId) {
+        context.centerId = patient.centerId;
+      }
     }
   }
 
