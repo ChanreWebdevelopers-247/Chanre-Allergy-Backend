@@ -3,6 +3,7 @@ import Center from '../models/Center.js';
 import Patient from '../models/Patient.js';
 import TestRequest from '../models/TestRequest.js';
 import PaymentLog from '../models/PaymentLog.js';
+import SlitTherapyRequest from '../models/SlitTherapyRequest.js';
 import bcrypt from 'bcryptjs';
 
 // Get all accountants for a center
@@ -388,18 +389,50 @@ export const getAccountantStats = async (req, res) => {
 // Get all bills and transactions for accountant
 export const getAllBillsAndTransactions = async (req, res) => {
   try {
-    // Check if user has centerId assigned
-    if (!req.user || !req.user.centerId) {
-      return res.status(400).json({ 
-        message: 'Accountant must be assigned to a center to access billing data. Please contact administrator to assign a center.',
-        error: 'MISSING_CENTER_ASSIGNMENT'
-      });
+    // Superadmin can access all centers, others need centerId
+    let centerId = null;
+    if (req.user.role !== 'superadmin') {
+      // Check if user has centerId assigned (for centeradmin, accountant, receptionist)
+      if (!req.user || !req.user.centerId) {
+        return res.status(400).json({ 
+          message: 'User must be assigned to a center to access billing data. Please contact administrator to assign a center.',
+          error: 'MISSING_CENTER_ASSIGNMENT'
+        });
+      }
+      centerId = req.user.centerId;
     }
+    // For superadmin, centerId remains null to access all centers (unless specified in query)
 
-    const centerId = req.user.centerId;
-    const { startDate, endDate, billType, status, consultationType, page = 1, limit = 50 } = req.query;
+    const { startDate, endDate, billType, status, consultationType, centerId: queryCenterId, page = 1, limit = 50 } = req.query;
     
-    console.log(`📋 Fetching bills for center: ${centerId}`);
+    console.log('📥 Received query parameters:', { startDate, endDate, consultationType, queryCenterId, role: req.user.role });
+    
+    // If superadmin provides centerId in query, use it to filter
+    if (req.user.role === 'superadmin' && queryCenterId) {
+      // Mongoose will automatically convert string ObjectIds, but we validate it
+      try {
+        // Validate ObjectId format
+        const mongoose = (await import('mongoose')).default;
+        if (mongoose.Types.ObjectId.isValid(queryCenterId)) {
+          centerId = queryCenterId; // Mongoose will handle conversion
+          console.log(`✅ Center filter applied: ${centerId} (will be converted to ObjectId by Mongoose)`);
+        } else {
+          console.error('❌ Invalid centerId format:', queryCenterId);
+          return res.status(400).json({
+            message: 'Invalid centerId format',
+            error: 'INVALID_CENTER_ID'
+          });
+        }
+      } catch (error) {
+        console.error('❌ Error validating centerId:', error);
+        return res.status(400).json({
+          message: 'Invalid centerId format',
+          error: 'INVALID_CENTER_ID'
+        });
+      }
+    }
+    
+    console.log(`📋 Fetching bills for ${req.user.role === 'superadmin' ? (centerId ? `center: ${centerId}` : 'all centers') : `center: ${centerId}`}`);
 
 
     // Build date filter
@@ -417,7 +450,8 @@ export const getAllBillsAndTransactions = async (req, res) => {
     const hasDateFilter = Object.keys(dateFilter).length > 0;
 
     // 1. Get ALL patients and group their billing by invoice number
-    const patientQuery = { centerId };
+    const patientQuery = centerId ? { centerId } : {};
+    console.log(`🔍 Patient query:`, JSON.stringify(patientQuery));
     let patients = [];
     try {
       patients = await Patient.find(patientQuery)
@@ -455,9 +489,19 @@ export const getAllBillsAndTransactions = async (req, res) => {
         
         patient.billing.forEach(bill => {
           const billDate = new Date(bill.createdAt || patient.createdAt);
-          const matchesDateFilter = !hasDateFilter || 
-                                   ((!dateFilter.$gte || billDate >= dateFilter.$gte) && 
-                                    (!dateFilter.$lte || billDate <= dateFilter.$lte));
+          const refundDate = bill.refundedAt ? new Date(bill.refundedAt) : null;
+          
+          // For refund reports, include bills if either:
+          // 1. Bill date is within range, OR
+          // 2. Refund date is within range
+          const billDateMatches = !hasDateFilter || 
+                                 ((!dateFilter.$gte || billDate >= dateFilter.$gte) && 
+                                  (!dateFilter.$lte || billDate <= dateFilter.$lte));
+          const refundDateMatches = refundDate && hasDateFilter &&
+                                    ((!dateFilter.$gte || refundDate >= dateFilter.$gte) && 
+                                     (!dateFilter.$lte || refundDate <= dateFilter.$lte));
+          
+          const matchesDateFilter = !hasDateFilter || billDateMatches || refundDateMatches;
           
           if (matchesDateFilter) {
             // Group by date (YYYY-MM-DD) to combine all services from same day
@@ -730,9 +774,19 @@ export const getAllBillsAndTransactions = async (req, res) => {
         
         patient.reassignedBilling.forEach(bill => {
           const billDate = new Date(bill.createdAt || patient.createdAt);
-          const matchesDateFilter = !hasDateFilter || 
-                                   ((!dateFilter.$gte || billDate >= dateFilter.$gte) && 
-                                    (!dateFilter.$lte || billDate <= dateFilter.$lte));
+          const refundDate = bill.refundedAt ? new Date(bill.refundedAt) : null;
+          
+          // For refund reports, include bills if either:
+          // 1. Bill date is within range, OR
+          // 2. Refund date is within range
+          const billDateMatches = !hasDateFilter || 
+                                 ((!dateFilter.$gte || billDate >= dateFilter.$gte) && 
+                                  (!dateFilter.$lte || billDate <= dateFilter.$lte));
+          const refundDateMatches = refundDate && hasDateFilter &&
+                                    ((!dateFilter.$gte || refundDate >= dateFilter.$gte) && 
+                                     (!dateFilter.$lte || refundDate <= dateFilter.$lte));
+          
+          const matchesDateFilter = !hasDateFilter || billDateMatches || refundDateMatches;
           
           if (matchesDateFilter) {
             const invoiceNum = bill.invoiceNumber || `REASSIGN-${bill._id}`;
@@ -810,10 +864,34 @@ export const getAllBillsAndTransactions = async (req, res) => {
     })));
 
       // 2. Get test/lab bills from TestRequest
-    const testQuery = { centerId };
+    const testQuery = {};
     if (hasDateFilter) {
-      testQuery.createdAt = dateFilter;
+      // For refund reports, include test requests if either:
+      // 1. Created within date range, OR
+      // 2. Has refund within date range
+      if (centerId) {
+        // Combine centerId with date filters using $and
+        testQuery.$and = [
+          { centerId: centerId },
+          {
+            $or: [
+              { createdAt: dateFilter },
+              { 'billing.refundedAt': dateFilter }
+            ]
+          }
+        ];
+      } else {
+        testQuery.$or = [
+          { createdAt: dateFilter },
+          { 'billing.refundedAt': dateFilter }
+        ];
+      }
+    } else if (centerId) {
+      // No date filter, just filter by centerId
+      testQuery.centerId = centerId;
     }
+    
+    console.log(`🔍 TestRequest query:`, JSON.stringify(testQuery));
 
     let testRequests = [];
     try {
@@ -939,7 +1017,17 @@ export const getAllBillsAndTransactions = async (req, res) => {
             },
             // User tracking
             generatedBy: testReq.billing.generatedBy || null,
-            createdAt: testReq.createdAt
+            createdAt: testReq.createdAt,
+            // Refund information
+            refundedBy: testReq.billing.refundedBy || null,
+            refundedByName: null, // Will be populated later from userMap
+            refundedAt: testReq.billing.refundedAt || null,
+            refundAmount: testReq.billing.refundAmount || 0,
+            refundMethod: testReq.billing.refundMethod || null,
+            refundReason: testReq.billing.refundReason || null,
+            refundNotes: testReq.billing.refundNotes || null,
+            // Refunds array if available
+            refunds: testReq.billing.refunds || []
           });
         }
       }
@@ -947,7 +1035,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
 
 
     // 3. Get payment logs
-    const paymentQuery = { centerId };
+    const paymentQuery = centerId ? { centerId } : {};
     if (hasDateFilter) {
       paymentQuery.createdAt = dateFilter;
     }
@@ -962,6 +1050,71 @@ export const getAllBillsAndTransactions = async (req, res) => {
         .populate('processedBy', 'name')
         .populate('createdBy', 'name')
         .sort({ createdAt: -1 });
+      
+      // Manually populate refund.refundedBy for documents that have refunds
+      // Note: Mongoose doesn't support populating nested paths directly, so we do it manually
+      const refundedByIds = new Set();
+      paymentLogs.forEach(log => {
+        if (log.refund && log.refund.refundedBy) {
+          // Handle both ObjectId and populated object cases
+          let refundedById = null;
+          if (log.refund.refundedBy._id) {
+            refundedById = log.refund.refundedBy._id.toString();
+          } else if (typeof log.refund.refundedBy === 'object' && log.refund.refundedBy.toString) {
+            refundedById = log.refund.refundedBy.toString();
+          } else if (typeof log.refund.refundedBy === 'string') {
+            refundedById = log.refund.refundedBy;
+          }
+          if (refundedById) {
+            refundedByIds.add(refundedById);
+          }
+        }
+      });
+      
+      if (refundedByIds.size > 0) {
+        try {
+          const refundedByUsers = await User.find({ _id: { $in: Array.from(refundedByIds) } }).select('name');
+          const refundedByUserMap = new Map();
+          refundedByUsers.forEach(user => {
+            refundedByUserMap.set(user._id.toString(), user.name);
+          });
+          
+          // Attach names to refund.refundedBy
+          paymentLogs.forEach(log => {
+            if (log.refund && log.refund.refundedBy) {
+              let refundedById = null;
+              if (log.refund.refundedBy._id) {
+                refundedById = log.refund.refundedBy._id.toString();
+              } else if (typeof log.refund.refundedBy === 'object' && log.refund.refundedBy.toString) {
+                refundedById = log.refund.refundedBy.toString();
+              } else if (typeof log.refund.refundedBy === 'string') {
+                refundedById = log.refund.refundedBy;
+              }
+              
+              if (refundedById && refundedByUserMap.has(refundedById)) {
+                const userName = refundedByUserMap.get(refundedById);
+                // Ensure refund.refundedBy is an object with name
+                if (log.refund.refundedBy._id || (typeof log.refund.refundedBy === 'object' && !log.refund.refundedBy.name)) {
+                  log.refund.refundedBy = {
+                    _id: log.refund.refundedBy._id || log.refund.refundedBy,
+                    name: userName
+                  };
+                } else if (typeof log.refund.refundedBy === 'string') {
+                  log.refund.refundedBy = {
+                    _id: log.refund.refundedBy,
+                    name: userName
+                  };
+                } else {
+                  log.refund.refundedBy.name = userName;
+                }
+              }
+            }
+          });
+        } catch (populateError) {
+          console.error('Error populating refund.refundedBy:', populateError);
+          // Continue without populating - not critical
+        }
+      }
       
       // Build map of invoice number to creator user ID
       paymentLogs.forEach(log => {
@@ -1002,11 +1155,167 @@ export const getAllBillsAndTransactions = async (req, res) => {
       date: log.createdAt,
       doctor: log.processedBy?.name || 'N/A',
       invoiceNumber: log.invoiceNumber,
-      status: log.status || 'completed'
+      status: log.status || 'completed',
+      // Include refund information if available
+      refund: log.refund ? {
+        refundedAmount: log.refund.refundedAmount || 0,
+        refundedAt: log.refund.refundedAt,
+        refundedBy: log.refund.refundedBy,
+        refundMethod: log.refund.refundMethod || log.paymentMethod,
+        externalRefundId: log.refund.externalRefundId,
+        refundReason: log.refund.refundReason
+      } : null,
+      // Include refundedBy at top level for easier access (from refund object, not top level)
+      refundedBy: log.refund?.refundedBy || null,
+      processedBy: log.processedBy
     }));
 
     // Combine all bills (already complete invoice structures)
-    const allInvoices = [...consultationBills, ...testBills];
+    // 4. Get SLIT therapy bills
+    const slitQuery = {};
+    if (hasDateFilter) {
+      // For refund reports, include SLIT therapy requests if either:
+      // 1. Created within date range, OR
+      // 2. Billing generated within date range, OR
+      // 3. Has refund within date range
+      if (centerId) {
+        // Combine centerId with date filters using $and
+        slitQuery.$and = [
+          { centerId: centerId },
+          {
+            $or: [
+              { 'billing.generatedAt': dateFilter },
+              { createdAt: dateFilter },
+              { 'billing.refundedAt': dateFilter }
+            ]
+          }
+        ];
+      } else {
+        slitQuery.$or = [
+          { 'billing.generatedAt': dateFilter },
+          { createdAt: dateFilter },
+          { 'billing.refundedAt': dateFilter }
+        ];
+      }
+    } else if (centerId) {
+      // No date filter, just filter by centerId
+      slitQuery.centerId = centerId;
+    }
+    
+    console.log(`🔍 SlitTherapyRequest query:`, JSON.stringify(slitQuery));
+
+    let slitTherapyRequests = [];
+    const slitBills = [];
+    
+    try {
+      slitTherapyRequests = await SlitTherapyRequest.find(slitQuery)
+        .populate('patientId', 'name uhId')
+        .populate('createdBy', 'name')
+        .sort({ createdAt: -1 });
+
+      for (const slitReq of slitTherapyRequests) {
+        // Only process if billing exists
+        if (!slitReq.billing) continue;
+        
+        if (!billType || billType === 'slit_therapy' || billType === 'Slit Therapy') {
+          if (!status || slitReq.billing.status === status) {
+            // Get patient info
+            let patientName = 'Unknown Patient';
+            let patientUhId = 'N/A';
+            let patientIdValue = null;
+
+            if (slitReq.patientId) {
+              if (typeof slitReq.patientId === 'object' && slitReq.patientId._id) {
+                patientName = slitReq.patientId.name || slitReq.patientName || 'Unknown Patient';
+                patientUhId = slitReq.patientId.uhId || 'N/A';
+                patientIdValue = slitReq.patientId._id;
+              } else {
+                patientIdValue = slitReq.patientId;
+                try {
+                  const patient = await Patient.findById(slitReq.patientId).select('name uhId');
+                  if (patient) {
+                    patientName = patient.name || slitReq.patientName || 'Unknown Patient';
+                    patientUhId = patient.uhId || 'N/A';
+                  }
+                } catch (err) {
+                  console.error(`Failed to fetch patient ${slitReq.patientId}:`, err.message);
+                  patientName = slitReq.patientName || 'Unknown Patient';
+                }
+              }
+            } else {
+              patientName = slitReq.patientName || 'Unknown Patient';
+            }
+
+            // Convert billing.items to services format
+            const services = (slitReq.billing.items || []).map(item => ({
+              name: item.name || 'SLIT Therapy',
+              serviceName: item.name || 'SLIT Therapy',
+              quantity: item.quantity || 1,
+              charges: item.unitPrice || item.total || 0,
+              amount: item.total || (item.unitPrice || 0) * (item.quantity || 1),
+              unitPrice: item.unitPrice || 0
+            }));
+
+            // Calculate services total
+            const servicesTotal = services.reduce((sum, service) => {
+              const serviceTotal = service.amount || (service.charges || service.unitPrice || 0) * (service.quantity || 1);
+              return sum + serviceTotal;
+            }, 0);
+
+            const finalAmount = slitReq.billing.amount || 0;
+            const paidAmount = slitReq.billing.paidAmount || 0;
+
+            slitBills.push({
+              _id: slitReq._id,
+              patientId: patientIdValue,
+              patientName: patientName,
+              uhId: patientUhId,
+              billType: 'Slit Therapy',
+              description: `SLIT Therapy - ${slitReq.productName || slitReq.productCode || 'Product'}`,
+              amount: finalAmount,
+              paidAmount: paidAmount,
+              balance: finalAmount - paidAmount,
+              status: slitReq.billing.status || 'generated',
+              paymentMethod: slitReq.billing.paymentMethod,
+              date: slitReq.billing.generatedAt || slitReq.createdAt,
+              invoiceNumber: slitReq.billing.invoiceNumber || `SLIT-${slitReq._id}`,
+              // Services array
+              services: services,
+              // User tracking
+              generatedBy: slitReq.billing.generatedBy || slitReq.createdBy || null,
+              createdAt: slitReq.billing.generatedAt || slitReq.createdAt,
+              // Payment tracking
+              paidAt: slitReq.billing.paidAt,
+              paidBy: slitReq.billing.paidBy || null,
+              // Refund tracking
+              refundedAmount: slitReq.billing.refundAmount || 0,
+              refundMethod: slitReq.billing.refundMethod,
+              refundedAt: slitReq.billing.refundedAt,
+              // Cancellation tracking
+              cancelledAt: slitReq.billing.cancelledAt,
+              cancellationReason: slitReq.billing.cancellationReason,
+              // Custom data
+              customData: {
+                productCode: slitReq.productCode,
+                productName: slitReq.productName,
+                quantity: slitReq.quantity,
+                courierRequired: slitReq.courierRequired,
+                courierFee: slitReq.courierFee,
+                deliveryMethod: slitReq.deliveryMethod,
+                transactionId: slitReq.billing.transactionId,
+                notes: slitReq.billing.paymentNotes || slitReq.notes || ''
+              }
+            });
+          }
+        }
+      }
+      console.log(`📊 SLIT Therapy bills: ${slitBills.length}`);
+    } catch (slitError) {
+      console.error('Error fetching SLIT therapy requests:', slitError);
+      // Don't return error, just log it and continue
+    }
+
+    const allInvoices = [...consultationBills, ...testBills, ...slitBills];
     
     // Collect all invoice numbers from bills for PaymentLog lookup
     const allInvoiceNumbers = new Set();
@@ -1021,12 +1330,12 @@ export const getAllBillsAndTransactions = async (req, res) => {
       try {
         console.log(`🔍 Querying PaymentLogs for ${allInvoiceNumbers.size} invoice numbers:`, Array.from(allInvoiceNumbers).slice(0, 5));
         const additionalPaymentLogs = await PaymentLog.find({
-          centerId,
+          ...(centerId ? { centerId } : {}),
           invoiceNumber: { $in: Array.from(allInvoiceNumbers) }
         })
           .populate('createdBy', 'name')
           .populate('processedBy', 'name')
-          .select('invoiceNumber createdBy processedBy transactionId');
+          .select('invoiceNumber createdBy processedBy transactionId status refund refundedBy');
         
         console.log(`📊 Found ${additionalPaymentLogs.length} PaymentLogs for invoices`);
         
@@ -1058,12 +1367,12 @@ export const getAllBillsAndTransactions = async (req, res) => {
         if (transactionIds.size > 0) {
           console.log(`🔍 Also checking PaymentLogs by transactionId: ${transactionIds.size} transaction IDs`);
           const transactionPaymentLogs = await PaymentLog.find({
-            centerId,
+            ...(centerId ? { centerId } : {}),
             transactionId: { $in: Array.from(transactionIds) }
           })
             .populate('createdBy', 'name')
             .populate('processedBy', 'name')
-            .select('invoiceNumber createdBy processedBy transactionId');
+            .select('invoiceNumber createdBy processedBy transactionId status refund refundedBy');
           
           transactionPaymentLogs.forEach(log => {
             if (log.invoiceNumber && !invoiceCreatorMap.has(log.invoiceNumber)) {
@@ -1085,10 +1394,103 @@ export const getAllBillsAndTransactions = async (req, res) => {
       }
     }
     
-    // Update invoices with generatedBy from PaymentLogs if not already set
+    // Match refunded PaymentLog entries to bills and add refund information
+    const refundMap = new Map(); // Map invoice number to refund information
+    const refundedPaymentLogs = paymentLogs.filter(log => {
+      const logStatus = log.status?.toLowerCase() || '';
+      return logStatus === 'refunded' || (log.refund && log.refund.refundedAmount > 0);
+    });
+
+    refundedPaymentLogs.forEach(log => {
+      if (log.invoiceNumber) {
+        // Extract refundedBy ID (could be ObjectId or populated object)
+        let refundedById = null;
+        if (log.refund?.refundedBy) {
+          refundedById = typeof log.refund.refundedBy === 'object' ? log.refund.refundedBy._id : log.refund.refundedBy;
+        } else if (log.refundedBy) {
+          refundedById = typeof log.refundedBy === 'object' ? log.refundedBy._id : log.refundedBy;
+        } else if (log.processedBy) {
+          refundedById = typeof log.processedBy === 'object' ? log.processedBy._id : log.processedBy;
+        }
+
+        // Extract refundedBy name (if populated)
+        let refundedByName = null;
+        if (log.refund?.refundedBy?.name) {
+          refundedByName = log.refund.refundedBy.name;
+        } else if (log.refundedBy?.name) {
+          refundedByName = log.refundedBy.name;
+        } else if (log.processedBy?.name) {
+          refundedByName = log.processedBy.name;
+        }
+
+        const refundInfo = {
+          refundedAmount: log.refund?.refundedAmount || log.amount || 0,
+          refundedAt: log.refund?.refundedAt || log.updatedAt || log.createdAt,
+          refundedBy: refundedById,
+          refundedByName: refundedByName, // Will be populated later from userMap if null
+          refundMethod: log.refund?.refundMethod || log.paymentMethod || 'cash',
+          externalRefundId: log.refund?.externalRefundId || log.transactionId || '',
+          invoiceNumber: log.invoiceNumber,
+          transactionId: log.transactionId
+        };
+        
+        // Store refund info keyed by invoice number
+        if (!refundMap.has(log.invoiceNumber)) {
+          refundMap.set(log.invoiceNumber, []);
+        }
+        refundMap.get(log.invoiceNumber).push(refundInfo);
+      }
+    });
+
+    // Add refund information to bills (before populating user names)
+    // We'll populate refundedByName after we query users
     allInvoices.forEach(inv => {
+      const invoiceNumber = inv.invoiceNumber || inv.billNo;
+      if (invoiceNumber && refundMap.has(invoiceNumber)) {
+        const refunds = refundMap.get(invoiceNumber);
+        if (!inv.refunds || !Array.isArray(inv.refunds)) {
+          inv.refunds = [];
+        }
+        // Add refunds from PaymentLog entries
+        refunds.forEach(refundInfo => {
+          inv.refunds.push({
+            amount: refundInfo.refundedAmount,
+            refundAmount: refundInfo.refundedAmount,
+            refundedAt: refundInfo.refundedAt,
+            processedAt: refundInfo.refundedAt,
+            refundedBy: refundInfo.refundedBy,
+            refundedByName: refundInfo.refundedByName, // Will be populated later from userMap
+            processedByName: refundInfo.refundedByName, // Will be populated later from userMap
+            refundMethod: refundInfo.refundMethod,
+            paymentMethod: refundInfo.refundMethod,
+            transactionId: refundInfo.externalRefundId || refundInfo.transactionId,
+            receiptNumber: refundInfo.invoiceNumber
+          });
+        });
+        
+        // Also update bill-level refund information if not already set
+        if (refunds.length > 0) {
+          const latestRefund = refunds[0]; // Use first refund (most recent)
+          if (!inv.refundedAmount || inv.refundedAmount === 0) {
+            inv.refundedAmount = latestRefund.refundedAmount;
+          }
+          if (!inv.refundedAt) {
+            inv.refundedAt = latestRefund.refundedAt;
+          }
+          if (!inv.refundedBy) {
+            inv.refundedBy = latestRefund.refundedBy;
+          }
+          if (!inv.refundedByName) {
+            inv.refundedByName = latestRefund.refundedByName; // Will be populated later from userMap
+          }
+          if (!inv.refundMethod) {
+            inv.refundMethod = latestRefund.refundMethod;
+          }
+        }
+      }
+
+      // Update invoices with generatedBy from PaymentLogs if not already set
       if (!inv.generatedBy && !inv.createdBy && !inv.userId) {
-        const invoiceNumber = inv.invoiceNumber || inv.billNo;
         if (invoiceNumber && invoiceCreatorMap.has(invoiceNumber)) {
           const creatorId = invoiceCreatorMap.get(invoiceNumber);
           inv.generatedBy = creatorId;
@@ -1108,7 +1510,7 @@ export const getAllBillsAndTransactions = async (req, res) => {
       try {
         const patientIds = [...new Set(invoicesWithoutCreator.map(inv => inv.patientId.toString()))];
         const fallbackPaymentLogs = await PaymentLog.find({
-          centerId,
+          ...(centerId ? { centerId } : {}),
           patientId: { $in: patientIds }
         })
           .populate('createdBy', 'name')
@@ -1160,18 +1562,52 @@ export const getAllBillsAndTransactions = async (req, res) => {
       userIds.add(creatorId.toString());
     });
     
+    // Collect refundedBy IDs from test requests
+    testBills.forEach(inv => {
+      if (inv.refundedBy) {
+        const refundedById = typeof inv.refundedBy === 'object' ? inv.refundedBy._id?.toString() : inv.refundedBy?.toString();
+        if (refundedById) userIds.add(refundedById);
+      }
+      if (inv.refunds && Array.isArray(inv.refunds)) {
+        inv.refunds.forEach(refund => {
+          if (refund.refundedBy) {
+            const refundedById = typeof refund.refundedBy === 'object' ? refund.refundedBy._id?.toString() : refund.refundedBy?.toString();
+            if (refundedById) userIds.add(refundedById);
+          }
+        });
+      }
+    });
+    
+    // Collect user IDs from refundMap (refundedBy IDs from PaymentLogs)
+    refundMap.forEach((refunds) => {
+      refunds.forEach(refundInfo => {
+        if (refundInfo.refundedBy) {
+          userIds.add(refundInfo.refundedBy.toString());
+        }
+      });
+    });
+    
     allInvoices.forEach(inv => {
       // Collect creator user IDs from multiple possible fields
       if (inv.generatedBy) userIds.add(inv.generatedBy.toString());
       if (inv.createdBy) userIds.add(inv.createdBy.toString());
       if (inv.userId) userIds.add(inv.userId.toString());
       if (inv.cancelledBy) userIds.add(inv.cancelledBy.toString());
-      if (inv.refundedBy) userIds.add(inv.refundedBy.toString());
+      if (inv.refundedBy) {
+        const refundedById = typeof inv.refundedBy === 'object' ? inv.refundedBy._id : inv.refundedBy;
+        userIds.add(refundedById.toString());
+      }
       // Also collect user IDs from refunds array
       if (inv.refunds && Array.isArray(inv.refunds)) {
         inv.refunds.forEach(refund => {
-          if (refund.refundedBy) userIds.add(refund.refundedBy.toString());
-          if (refund.approvedBy) userIds.add(refund.approvedBy.toString());
+          if (refund.refundedBy) {
+            const refundedById = typeof refund.refundedBy === 'object' ? refund.refundedBy._id : refund.refundedBy;
+            userIds.add(refundedById.toString());
+          }
+          if (refund.approvedBy) {
+            const approvedById = typeof refund.approvedBy === 'object' ? refund.approvedBy._id : refund.approvedBy;
+            userIds.add(approvedById.toString());
+          }
         });
       }
       // Also collect user IDs from payment history
@@ -1306,16 +1742,20 @@ export const getAllBillsAndTransactions = async (req, res) => {
         inv.cancelledByName = userMap.get(cancelledById) || 'N/A';
       }
       if (inv.refundedBy) {
-        inv.refundedByName = userMap.get(inv.refundedBy.toString()) || 'N/A';
+        const refundedById = typeof inv.refundedBy === 'object' ? inv.refundedBy._id?.toString() : inv.refundedBy?.toString();
+        inv.refundedByName = refundedById ? (userMap.get(refundedById) || inv.refundedByName || 'N/A') : (inv.refundedByName || 'N/A');
       }
       // Add user names to refunds array
       if (inv.refunds && Array.isArray(inv.refunds)) {
         inv.refunds.forEach(refund => {
           if (refund.refundedBy) {
-            refund.refundedByName = userMap.get(refund.refundedBy.toString()) || 'N/A';
+            const refundedById = typeof refund.refundedBy === 'object' ? refund.refundedBy._id?.toString() : refund.refundedBy?.toString();
+            refund.refundedByName = refundedById ? (userMap.get(refundedById) || refund.refundedByName || 'N/A') : (refund.refundedByName || 'N/A');
+            refund.processedByName = refund.refundedByName; // Also set processedByName for consistency
           }
           if (refund.approvedBy) {
-            refund.approvedByName = userMap.get(refund.approvedBy.toString()) || 'N/A';
+            const approvedById = typeof refund.approvedBy === 'object' ? refund.approvedBy._id?.toString() : refund.approvedBy?.toString();
+            refund.approvedByName = approvedById ? (userMap.get(approvedById) || refund.approvedByName || 'N/A') : (refund.approvedByName || 'N/A');
           }
         });
       }

@@ -161,6 +161,10 @@ const slitTherapyRequestSchema = new Schema({
     refundMethod: String,
     refundNotes: String,
     refundedAt: Date,
+    refundedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User'
+    },
     cancellationReason: String,
     cancelledAt: Date
   },

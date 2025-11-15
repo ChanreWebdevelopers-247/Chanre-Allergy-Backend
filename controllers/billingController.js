@@ -4008,6 +4008,18 @@ export const processPayment = async (req, res) => {
     console.log('🚀 processPayment called');
     console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
     console.log('📥 Request user:', req.user);
+    
+    // Validate user is authenticated
+    if (!req.user || (!req.user.id && !req.user._id)) {
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication required. Please log in again.'
+      });
+    }
+    
+    const userId = req.user.id || req.user._id;
+    const userName = req.user.name || req.user.userName || 'Receptionist';
+    
     const { 
       patientId, 
       invoiceId, 
@@ -4089,7 +4101,9 @@ export const processPayment = async (req, res) => {
         // Update payment
         bill.paidAmount = (billPaid + paymentForThisBill);
         bill.paymentMethod = paymentMethod;
-        bill.paidBy = req.user.name || 'Receptionist';
+        bill.paidBy = userName; // Store name for display
+        bill.paidById = userId; // Store user ID for reference
+        bill.generatedBy = bill.generatedBy || userId; // Ensure generatedBy is set
         bill.paidAt = new Date();
         bill.paymentNotes = notes || '';
         if (superConsultantDoc && bill.consultationType?.startsWith('superconsultant_')) {
@@ -4313,7 +4327,7 @@ export const processPayment = async (req, res) => {
         for (const superconsultant of superconsultants) {
           const notification = new Notification({
             recipient: superconsultant._id,
-            sender: req.user.id || req.user._id,
+            sender: userId,
             type: 'test_request',
             title: 'Lab Reports Available for Review',
             message: `Patient ${patient.name} has completed superconsultant billing payment. ${completedReports.length > 0 ? `${completedReports.length} lab report(s) are now available for review.` : 'Lab reports will be available once tests are completed.'}`,
@@ -4360,7 +4374,7 @@ export const processPayment = async (req, res) => {
         userAgent: req.headers?.['user-agent'],
         source: 'web',
         verified: true,
-        verifiedBy: req.user.id || req.user._id,
+        verifiedBy: userId,
         verifiedAt: new Date()
       };
 
@@ -4368,7 +4382,7 @@ export const processPayment = async (req, res) => {
       await logPatientBillingPayment(
         patientId,
         paymentData,
-        req.user.id || req.user._id,
+        userId,
         metadata
       );
       
@@ -4408,7 +4422,7 @@ export const processPayment = async (req, res) => {
           notes: notes || 'Payment processed through billing system'
         };
 
-        await TransactionService.createReceiptTransaction(receiptTransactionData, req.user);
+        await TransactionService.createReceiptTransaction(receiptTransactionData, { id: userId, _id: userId, name: userName, ...req.user });
         console.log('✅ Receipt transaction created successfully');
       } else {
         // This is likely a consultation billing transaction
@@ -4433,7 +4447,7 @@ export const processPayment = async (req, res) => {
           notes: notes || 'Consultation payment processed through billing system'
         };
 
-        await TransactionService.createConsultationTransaction(consultationTransactionData, req.user);
+        await TransactionService.createConsultationTransaction(consultationTransactionData, { id: userId, _id: userId, name: userName, ...req.user });
         console.log('✅ Consultation transaction created successfully');
       }
     } catch (transactionError) {
@@ -4707,6 +4721,19 @@ export const processRefund = async (req, res) => {
   try {
     console.log('🚀 processRefund called');
     console.log('📝 Request body:', req.body);
+    console.log('👤 Request user:', req.user);
+    
+    // Validate user is authenticated
+    if (!req.user || (!req.user.id && !req.user._id)) {
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication required. Please log in again.'
+      });
+    }
+    
+    const userId = req.user.id || req.user._id;
+    const userName = req.user.name || req.user.userName || 'Receptionist';
+    
     const { 
       patientId, 
       amount, 
@@ -4841,7 +4868,8 @@ export const processRefund = async (req, res) => {
       // Update bill with refund information
       bill.refundAmount = (bill.refundAmount || 0) + refundForThisBill;
       bill.refundedAt = new Date();
-      bill.refundedBy = req.user.id || req.user._id;
+      bill.refundedBy = userId; // Store user ID
+      bill.refundedByName = userName; // Store user name for display
       bill.refundMethod = refundMethod;
       bill.refundReason = reason;
       bill.refundNotes = notes || '';
@@ -4892,7 +4920,7 @@ export const processRefund = async (req, res) => {
         refundAmount,
         refundMethod,
         reason,
-        req.user.id || req.user._id,
+        userId,
         metadata
       );
       
@@ -4943,7 +4971,7 @@ export const processRefund = async (req, res) => {
           refundReason: reason,
           refundedAt: new Date(),
           refundType: refundType,
-          refundedBy: req.user?.id || req.user?._id || 'system',
+          refundedBy: userId,
           externalRefundId: `REF-${Date.now()}-${patientId.toString().slice(-6)}`
         };
         
@@ -5053,7 +5081,14 @@ export const processTestRequestRefund = async (req, res) => {
     // Update billing status to refunded
     testRequest.billing.status = 'refunded';
     testRequest.billing.refundedAt = new Date();
-    testRequest.billing.refundedBy = req.user?.id || req.user?._id || 'system';
+    testRequest.billing.refundedBy = req.user?.id || req.user?._id;
+    if (!testRequest.billing.refundedBy) {
+      console.error('❌ No user found in request - cannot process refund without user');
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication required to process refund'
+      });
+    }
     testRequest.billing.refundMethod = refundMethod;
     testRequest.billing.refundReason = reason;
     testRequest.billing.refundNotes = notes || '';
@@ -5109,7 +5144,7 @@ export const processTestRequestRefund = async (req, res) => {
           refundReason: reason,
           refundedAt: new Date(),
           refundType: 'full', // Test request refunds are typically full refunds
-          refundedBy: req.user?.id || req.user?._id || 'system',
+          refundedBy: req.user?.id || req.user?._id,
           externalRefundId: `REF-${Date.now()}-${testRequest._id.toString().slice(-6)}`
         };
         
@@ -5250,7 +5285,14 @@ export const updatePaidBill = async (req, res) => {
     // Mark as refunded
     testRequest.billing.status = 'refunded';
     testRequest.billing.refundedAt = new Date();
-    testRequest.billing.refundedBy = req.user?.id || req.user?._id || 'system';
+    testRequest.billing.refundedBy = req.user?.id || req.user?._id;
+    if (!testRequest.billing.refundedBy) {
+      console.error('❌ No user found in request - cannot process refund without user');
+      return res.status(401).json({
+        success: false,
+        message: 'User authentication required to process refund'
+      });
+    }
     testRequest.billing.refundAmount = refundAmount;
     testRequest.billing.refundReason = notes || 'Bill edited - items removed';
     testRequest.billing.refundMethod = 'bill_edit';
@@ -5306,7 +5348,7 @@ export const updatePaidBill = async (req, res) => {
           refundReason: 'Bill edited - items removed',
           refundedAt: new Date(),
           refundType: 'partial',
-          refundedBy: req.user?.id || req.user?._id || 'system',
+          refundedBy: req.user?.id || req.user?._id,
           externalRefundId: `REF-${Date.now()}-${testRequest._id.toString().slice(-6)}`
         };
         

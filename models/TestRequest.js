@@ -149,7 +149,7 @@ const testRequestSchema = new mongoose.Schema({
     updatedAt: Date, // ✅ NEW: Track when updated
     // ✅ NEW: Refund tracking fields
     refundedAt: Date,
-    refundedBy: String, // Can be ObjectId or string like 'system'
+    refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // User who processed the refund
     refundMethod: String,
     refundReason: String,
     refundNotes: String,

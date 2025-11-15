@@ -566,6 +566,7 @@ export const refundSlitTherapyRequest = async (req, res) => {
     request.billing.refundMethod = method || 'cash';
     request.billing.refundNotes = notes || '';
     request.billing.refundedAt = new Date();
+    request.billing.refundedBy = req.user._id || req.user.id;
     request.billing.status = 'refunded';
     request.billing.paidAmount = Math.max(0, paidAmount - refundAmount);
     request.updatedBy = req.user._id || req.user.id;
